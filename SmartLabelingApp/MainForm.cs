@@ -163,6 +163,16 @@ namespace SmartLabelingApp
         private LabelCreateWindow _labelWin;    // 라벨 생성 창
         private Control _labelAnchorBtn;        // 라벨 창 앵커(ADD 버튼 슬롯)
         private int _labelSeq = 1;              // 빈 이름일 때 자동 이름 부여용
+
+        private ToolTip _tt = new ToolTip
+        {
+            AutoPopDelay = 8000,   // 보여지는 시간(ms)
+            InitialDelay = 400,    // 최초 지연(ms)
+            ReshowDelay = 100,     // 다시 보여줄 때 지연
+            ShowAlways = true,     // 비활성화여도 표시
+            IsBalloon = true       // 말풍선 스타일(원하지 않으면 false)
+        };
+
         #endregion
 
         #region 4) Initialization & Layout (Constructor)
@@ -509,6 +519,28 @@ namespace SmartLabelingApp
             };
             _btnInfer.Click += OnInferClick;
             _rightTools3.Controls.Add(_btnInfer);
+
+            // 파일/작업 플로우
+            _tt.SetToolTip(_btnOpen, "이미지 파일 또는 폴더를 열어 작업을 시작합니다.");
+            _tt.SetToolTip(_btnSave, "현재 이미지의 라벨/마스크를 저장합니다 (YOLO Seg 형식).");
+            _tt.SetToolTip(_btnAdd, "새 라벨(클래스)을 추가합니다.");
+            _tt.SetToolTip(_btnExport, "라벨링 데이터를 YOLO Seg 데이터셋으로 내보냅니다.");
+            _tt.SetToolTip(_btnTrain, "Export한 데이터셋으로 YOLO Seg 모델을 학습합니다.");
+            _tt.SetToolTip(_btnInfer, "선택한 ONNX 모델로 추론하고 오버레이로 확인합니다.");
+
+            // 선택/편집 도구
+            _tt.SetToolTip(_btnPointer, "선택/이동/편집 모드로 전환합니다.");
+
+            _tt.SetToolTip(_btnPointer, "포인터: 선택/이동/편집 모드로 전환합니다.");
+            _tt.SetToolTip(_btnCircle, "원/타원: 드래그하여 원형(타원) 마스크를 그립니다.");
+            _tt.SetToolTip(_btnTriangle, "삼각형: 드래그하여 삼각형 마스크를 그립니다.");
+            _tt.SetToolTip(_btnBox, "사각형: 드래그하여 직사각형 마스크를 그립니다.");
+            _tt.SetToolTip(_btnNgon, "N-각형: 변의 개수를 설정해 규칙 다각형을 그립니다.");
+            _tt.SetToolTip(_btnPolygon, "폴리곤: 점을 찍어 자유형 다각형 마스크를 그립니다.");
+            _tt.SetToolTip(_btnBrush, "브러시: 브러시로 마스크를 칠합니다.");
+            _tt.SetToolTip(_btnEraser, "지우개: 마스크를 지웁니다.");
+            _tt.SetToolTip(_btnMask, "Reverse 토글: 현재 그린 영역을 반전 시킵니다.");
+            _tt.SetToolTip(_btnAI, "AI 보조: 자동 세그먼트/스마트 선택을 실행합니다.");
 
             // 툴 아이콘 생성
             _btnPointer = CreateToolIcon(Properties.Resources.Arrow, "Pointer", RIGHT_SLOT_H, RIGHT_ICON_PX);
