@@ -77,6 +77,8 @@ namespace SmartLabelingApp
         private string _lastYoloExportRoot;  // 마지막으로 Save한 YOLO 데이터셋 루트
         private readonly Dictionary<string, Color> _classColorMap = new Dictionary<string, Color>(StringComparer.OrdinalIgnoreCase);
 
+        private string _lastExportZipPath;
+
         private struct LabelInfo
         {
             public string Name { get; set; }
@@ -525,7 +527,7 @@ namespace SmartLabelingApp
             _tt.SetToolTip(_btnSave, "현재 이미지의 라벨/마스크를 저장합니다 (YOLO Seg 형식).");
             _tt.SetToolTip(_btnAdd, "새 라벨(클래스)을 추가합니다.");
             _tt.SetToolTip(_btnExport, "라벨링 데이터를 YOLO Seg 데이터셋으로 내보냅니다.");
-            _tt.SetToolTip(_btnTrain, "Export한 데이터셋으로 YOLO Seg 모델을 학습합니다.");
+            _tt.SetToolTip(_btnTrain, "Export한 데이터셋으로 YOLO Seg 모델을 학습하여 .pt 모델과 .onnx 모델을 생성합니다.");
             _tt.SetToolTip(_btnInfer, "선택한 ONNX 모델로 추론하고 오버레이로 확인합니다.");
 
             // 툴 아이콘 생성
@@ -891,10 +893,39 @@ namespace SmartLabelingApp
 
             // 초기 하이라이트
             HighlightTool(_btnPointer, true, RIGHT_ICON_PX);
+
+            LoadLastExportZipPath();
         }
         #endregion
 
         #region 5) UI Helpers (유틸/파일/레이아웃 보조)
+        private static string GetLastExportZipPathFile()
+        {
+            var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                    "SmartLabelingApp");
+            Directory.CreateDirectory(root);
+            return Path.Combine(root, "last_export_zip.txt");
+        }
+
+        private void LoadLastExportZipPath()
+        {
+            try
+            {
+                var f = GetLastExportZipPathFile();
+                if (File.Exists(f))
+                    _lastExportZipPath = File.ReadAllText(f).Trim();
+            }
+            catch { /* 무시 */ }
+        }
+
+        private void SaveLastExportZipPath()
+        {
+            try
+            {
+                File.WriteAllText(GetLastExportZipPathFile(), _lastExportZipPath ?? "");
+            }
+            catch { /* 무시 */ }
+        }
 
         private void TryBindAnnotationRootNear(string folder)
         {
@@ -1314,6 +1345,39 @@ namespace SmartLabelingApp
                 return di.FullName; // AnnotationData 경로
             }
         }
+
+        private string PickAnnotationDataFolderWithDoubleClick(string expectedAnnotationDataPath = null)
+        {
+            // 초기 디렉터리: AnnotationData가 이미 있으면 그 '부모'에서 시작해 목록에 AnnotationData가 보이도록
+            string initial = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+            if (!string.IsNullOrEmpty(expectedAnnotationDataPath) && Directory.Exists(expectedAnnotationDataPath))
+            {
+                var parent = Directory.GetParent(expectedAnnotationDataPath);
+                if (parent != null && parent.Exists)
+                    initial = parent.FullName;
+            }
+
+            using (var fbd = new FolderBrowserDialog())
+            {
+                fbd.Description = "AnnotationData 폴더를 선택하세요 (더블클릭으로 바로 선택 가능)";
+                fbd.SelectedPath = initial;
+
+                // ✅ FolderBrowserDialog는 폴더를 더블클릭하면 '선택 + 닫힘'이 기본 동작
+                if (fbd.ShowDialog(this) == DialogResult.OK)
+                {
+                    // 사용자가 부모에서 더블클릭하면 그대로 AnnotationData 폴더가 들어옵니다.
+                    // 혹시 사용자가 다른 폴더를 선택했는데 그 안에 AnnotationData가 있으면 보정(원치 않으면 이 블록 제거)
+                    string chosen = fbd.SelectedPath;
+                    string candidate = Path.Combine(chosen, "AnnotationData");
+                    if (!chosen.EndsWith("AnnotationData", StringComparison.OrdinalIgnoreCase) && Directory.Exists(candidate))
+                        return candidate;
+
+                    return chosen;
+                }
+            }
+            return null;
+        }
+
         string pickedPath = "";
         private async void OnExportClick(object sender, EventArgs e)
         {
@@ -1374,14 +1438,11 @@ namespace SmartLabelingApp
                         dlg.ShowDialog(this);
                     }
 
-                    //try
-                    //{
-                    //    if (Directory.Exists(resultRoot))
-                    //    {
-                    //        Process.Start("explorer.exe", "\"" + resultRoot + "\"");
-                    //    }
-                    //}
-                    //catch { /* 탐색기 열기 실패는 무시 */ }
+                    if (!string.IsNullOrEmpty(zipPath))
+                    {
+                        _lastExportZipPath = zipPath;
+                        SaveLastExportZipPath();
+                    }
                 }
             }
             catch (Exception ex)
@@ -1394,6 +1455,7 @@ namespace SmartLabelingApp
                 if (this.ActiveControl != null && !(this.ActiveControl is Form)) this.ActiveControl.Focus();
             }
         }
+
 
 
         private string CreateResultZip(string resultRoot, string zipFileName = null, Action<int, string> onProgress = null)
@@ -2929,27 +2991,6 @@ namespace SmartLabelingApp
                 return;
             }
 
-            //// 파일명 기반 1차 체크
-            //string wname = Path.GetFileName(pretrainedWeightsPath).ToLowerInvariant();
-            //bool nameLooksSeg = wname.Contains("-seg.") || wname.EndsWith("seg.pt");
-
-            //// 파이썬으로 실제 모델 task 확인 (best.pt도 정확히 판별)
-            //bool probeSaysSeg = ProbeYoloTaskIsSegment(pythonExe, pretrainedWeightsPath, baseDir);
-
-            //if (!(nameLooksSeg || probeSaysSeg))
-            //{
-            //    new Guna.UI2.WinForms.Guna2MessageDialog
-            //    {
-            //        Parent = this,
-            //        Caption = "Train",
-            //        Text = "세그멘테이션 학습은 세그 전용 가중치가 필요합니다.\n" +
-            //               $"지금 파일: {pretrainedWeightsPath}\n(파일명에 -seg가 없으면 best.pt라도 세그 모델인지 확인해 주세요.)",
-            //        Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
-            //        Icon = Guna.UI2.WinForms.MessageDialogIcon.Warning,
-            //        Style = Guna.UI2.WinForms.MessageDialogStyle.Light
-            //    }.Show();
-            //    return;
-            //}
 
 
             // =====[ STEP 1) ZIP 선택 ]=================================================
@@ -2959,11 +3000,25 @@ namespace SmartLabelingApp
             {
                 ofd.Title = "학습 데이터 ZIP 선택";
                 ofd.Filter = "Zip Archives (*.zip)|*.zip";
-                ofd.InitialDirectory = baseDir;
                 ofd.CheckFileExists = true;
                 ofd.CheckPathExists = true;
                 ofd.Multiselect = false;
                 ofd.RestoreDirectory = true;
+
+                // ✅ 시작 위치 결정: 마지막 Export ZIP이 있으면 그 폴더/파일, 없으면 데스크탑
+                string initialDir;
+                if (!string.IsNullOrEmpty(_lastExportZipPath) && File.Exists(_lastExportZipPath))
+                {
+                    initialDir = Path.GetDirectoryName(_lastExportZipPath);
+                    // 파일이 실제 존재하면 기본 선택까지 해 줌(사용자는 바로 Enter만 눌러도 됨)
+                    ofd.FileName = Path.GetFileName(_lastExportZipPath);
+                }
+                else
+                {
+                    initialDir = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+                }
+                ofd.InitialDirectory = initialDir;
+
                 if (ofd.ShowDialog(this) != DialogResult.OK) return;
                 zipPath = ofd.FileName;
             }

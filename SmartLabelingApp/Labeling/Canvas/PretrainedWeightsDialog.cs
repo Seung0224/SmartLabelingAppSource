@@ -236,6 +236,7 @@ namespace SmartLabelingApp
                     overlay.Report(100, "Completed");
                 }
 
+                this.DialogResult = DialogResult.OK;
                 this.Close();
             }
             catch
@@ -355,6 +356,7 @@ namespace SmartLabelingApp
                     }
 
                     if (_line2 != null) _line2.Text = dest;
+                    this.DialogResult = DialogResult.OK;
                     this.Close(); // 닫고 메인 UI로 복귀
                 }
                 catch (Exception ex)
