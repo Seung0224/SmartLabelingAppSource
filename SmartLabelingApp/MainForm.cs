@@ -437,7 +437,7 @@ namespace SmartLabelingApp
 
             _btnOpen = new Guna2Button
             {
-                Text = "1 : OPEN",
+                Text = "1:OPEN",
                 BorderRadius = 12,
                 BorderThickness = 2,
                 BorderColor = Color.LightGray,
@@ -454,7 +454,7 @@ namespace SmartLabelingApp
 
             _btnSave = new Guna2Button
             {
-                Text = "2 : SAVE",
+                Text = "2:SAVE",
                 BorderRadius = 12,
                 BorderThickness = 2,
                 BorderColor = Color.LightGray,
@@ -471,7 +471,7 @@ namespace SmartLabelingApp
 
             _btnExport = new Guna2Button
             {
-                Text = "3: EXPRT",
+                Text = "3:EXPRT",
                 BorderRadius = 12,
                 BorderThickness = 2,
                 BorderColor = Color.LightGray,
@@ -488,7 +488,7 @@ namespace SmartLabelingApp
 
             _btnTrain = new Guna2Button
             {
-                Text = "4: TRAIN",
+                Text = "4:TRAIN",
                 BorderRadius = 12,
                 BorderThickness = 2,
                 BorderColor = Color.LightGray,
@@ -505,7 +505,7 @@ namespace SmartLabelingApp
 
             _btnInfer = new Guna2Button
             {
-                Text = "5 : INFER",
+                Text = "5:INFER",
                 BorderRadius = 12,
                 BorderThickness = 2,
                 BorderColor = Color.LightGray,
@@ -527,20 +527,6 @@ namespace SmartLabelingApp
             _tt.SetToolTip(_btnExport, "라벨링 데이터를 YOLO Seg 데이터셋으로 내보냅니다.");
             _tt.SetToolTip(_btnTrain, "Export한 데이터셋으로 YOLO Seg 모델을 학습합니다.");
             _tt.SetToolTip(_btnInfer, "선택한 ONNX 모델로 추론하고 오버레이로 확인합니다.");
-
-            // 선택/편집 도구
-            _tt.SetToolTip(_btnPointer, "선택/이동/편집 모드로 전환합니다.");
-
-            _tt.SetToolTip(_btnPointer, "포인터: 선택/이동/편집 모드로 전환합니다.");
-            _tt.SetToolTip(_btnCircle, "원/타원: 드래그하여 원형(타원) 마스크를 그립니다.");
-            _tt.SetToolTip(_btnTriangle, "삼각형: 드래그하여 삼각형 마스크를 그립니다.");
-            _tt.SetToolTip(_btnBox, "사각형: 드래그하여 직사각형 마스크를 그립니다.");
-            _tt.SetToolTip(_btnNgon, "N-각형: 변의 개수를 설정해 규칙 다각형을 그립니다.");
-            _tt.SetToolTip(_btnPolygon, "폴리곤: 점을 찍어 자유형 다각형 마스크를 그립니다.");
-            _tt.SetToolTip(_btnBrush, "브러시: 브러시로 마스크를 칠합니다.");
-            _tt.SetToolTip(_btnEraser, "지우개: 마스크를 지웁니다.");
-            _tt.SetToolTip(_btnMask, "Reverse 토글: 현재 그린 영역을 반전 시킵니다.");
-            _tt.SetToolTip(_btnAI, "AI 보조: 자동 세그먼트/스마트 선택을 실행합니다.");
 
             // 툴 아이콘 생성
             _btnPointer = CreateToolIcon(Properties.Resources.Arrow, "Pointer", RIGHT_SLOT_H, RIGHT_ICON_PX);
@@ -613,6 +599,18 @@ namespace SmartLabelingApp
                 SetTool(ToolMode.AI, _btnAI);
                 if (_brushWin != null && _brushWin.Visible) _brushWin.Hide();
             };
+
+
+            _tt.SetToolTip(_btnPointer, "포인터: 선택/이동/편집 모드로 전환합니다.");
+            _tt.SetToolTip(_btnCircle, "원/타원: 드래그하여 원형(타원) 마스크를 그립니다.");
+            _tt.SetToolTip(_btnTriangle, "삼각형: 드래그하여 삼각형 마스크를 그립니다.");
+            _tt.SetToolTip(_btnBox, "사각형: 드래그하여 직사각형 마스크를 그립니다.");
+            _tt.SetToolTip(_btnNgon, "N-각형: 변의 개수를 설정해 규칙 다각형을 그립니다.");
+            _tt.SetToolTip(_btnPolygon, "폴리곤: 점을 찍어 자유형 다각형 마스크를 그립니다.");
+            _tt.SetToolTip(_btnBrush, "브러시: 브러시로 마스크를 칠합니다.");
+            _tt.SetToolTip(_btnEraser, "지우개: 마스크를 지웁니다.");
+            _tt.SetToolTip(_btnMask, "Reverse 토글: 현재 그린 영역을 반전 시킵니다.");
+            _tt.SetToolTip(_btnAI, "AI 보조: 자동 세그먼트/스마트 선택을 실행합니다.");
 
             // 슬롯 래핑 후 상단 바에 배치
             int innerWSlot = RIGHT_DOCK_W - _rightToolDock.Padding.Horizontal;
