@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{F9929435-D8AD-4A1D-A706-FDA5E804099C}</ProjectGuid>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>SmartLabelingApp</RootNamespace>
+    <AssemblyName>SmartLabelingApp</AssemblyName>
+    <TargetFrameworkVersion>v4.8.1</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|x64'">
+    <DebugSymbols>true</DebugSymbols>
+    <OutputPath>bin\x64\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DebugType>full</DebugType>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>7.3</LangVersion>
+    <ErrorReport>prompt</ErrorReport>
+    <Prefer32Bit>true</Prefer32Bit>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|x64'">
+    <OutputPath>bin\x64\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <Optimize>true</Optimize>
+    <DebugType>pdbonly</DebugType>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>7.3</LangVersion>
+    <ErrorReport>prompt</ErrorReport>
+    <Prefer32Bit>true</Prefer32Bit>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="PresentationFramework" />
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.Xml.Linq" />
+    <Reference Include="System.Data.DataSetExtensions" />
+    <Reference Include="Microsoft.CSharp" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Deployment" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Xml" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Labeling\AI\AIInterfcae.cs" />
+    <Compile Include="Labeling\AI\AISegmenterOpenCV.cs" />
+    <Compile Include="Labeling\AI\AITool.cs" />
+    <Compile Include="Labeling\Canvas\BrushSizeWindow.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Labeling\Canvas\ExportResultDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Labeling\Canvas\ExportSplitDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Labeling\Canvas\ImageCanvas.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Include="Labeling\Canvas\InferResultDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Labeling\Canvas\LabelCreateWindow.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Labeling\Canvas\PretrainedWeightsDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Labeling\Canvas\ProgressBarOverlay.cs" />
+    <Compile Include="Labeling\Services\LabelStatusService.cs" />
+    <Compile Include="Labeling\Services\ProcessRunner.cs" />
+    <Compile Include="Labeling\Shapes\BrushStrokeShape.cs" />
+    <Compile Include="Labeling\Shapes\CircleShape.cs" />
+    <Compile Include="Labeling\Shapes\EditorUIConfig.cs" />
+    <Compile Include="Labeling\Shapes\ShapeAreaExtensions.cs" />
+    <Compile Include="Labeling\Shapes\TriangleShape.cs" />
+    <Compile Include="Labeling\Tools\BrushTool.cs" />
+    <Compile Include="Labeling\Tools\CircleTool.cs" />
+    <Compile Include="Labeling\Canvas\NgonSidesDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Labeling\Tools\EraserTool.cs" />
+    <Compile Include="Labeling\Tools\MaskTool.cs" />
+    <Compile Include="Labeling\Util\PathBoolean.cs" />
+    <Compile Include="Labeling\Util\YoloSegOnnx.cs" />
+    <Compile Include="MainForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="MainForm.Designer.cs">
+      <DependentUpon>MainForm.cs</DependentUpon>
+    </Compile>
+    <Compile Include="Program.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Labeling\Services\ClipboardService.cs" />
+    <Compile Include="Labeling\Services\HistoryService.cs" />
+    <Compile Include="Labeling\Services\SelectionService.cs" />
+    <Compile Include="Labeling\Shapes\IShape.cs" />
+    <Compile Include="Labeling\Shapes\PolygonShape.cs" />
+    <Compile Include="Labeling\Shapes\RectangleShape.cs" />
+    <Compile Include="Labeling\Tools\ITool.cs" />
+    <Compile Include="Labeling\Tools\PointerTool.cs" />
+    <Compile Include="Labeling\Tools\PolygonTool.cs" />
+    <Compile Include="Labeling\Util\Enums.cs" />
+    <Compile Include="Labeling\Util\GeometryUtil.cs" />
+    <Compile Include="Labeling\Util\ViewTransform.cs" />
+    <EmbeddedResource Include="MainForm.resx">
+      <DependentUpon>MainForm.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Properties\Resources.resx">
+      <Generator>ResXFileCodeGenerator</Generator>
+      <LastGenOutput>Resources.Designer.cs</LastGenOutput>
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <Compile Include="Properties\Resources.Designer.cs">
+      <AutoGen>True</AutoGen>
+      <DependentUpon>Resources.resx</DependentUpon>
+      <DesignTime>True</DesignTime>
+    </Compile>
+    <None Include="Properties\Settings.settings">
+      <Generator>SettingsSingleFileGenerator</Generator>
+      <LastGenOutput>Settings.Designer.cs</LastGenOutput>
+    </None>
+    <Compile Include="Properties\Settings.Designer.cs">
+      <AutoGen>True</AutoGen>
+      <DependentUpon>Settings.settings</DependentUpon>
+      <DesignTimeSharedInput>True</DesignTimeSharedInput>
+    </Compile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="App.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Clipper2">
+      <Version>1.5.4</Version>
+    </PackageReference>
+    <PackageReference Include="CyotekImageBox">
+      <Version>1.3.1</Version>
+    </PackageReference>
+    <PackageReference Include="Guna.UI2.WinForms">
+      <Version>2.0.4.7</Version>
+    </PackageReference>
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML">
+      <Version>1.22.1</Version>
+    </PackageReference>
+    <PackageReference Include="Microsoft.WindowsAPICodePack.Shell">
+      <Version>1.1.0</Version>
+    </PackageReference>
+    <PackageReference Include="OpenCvSharp4">
+      <Version>4.11.0.20250507</Version>
+    </PackageReference>
+    <PackageReference Include="OpenCvSharp4.Extensions">
+      <Version>4.11.0.20250507</Version>
+    </PackageReference>
+    <PackageReference Include="OpenCvSharp4.runtime.win">
+      <Version>4.11.0.20250507</Version>
+    </PackageReference>
+  </ItemGroup>
+  <ItemGroup />
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>
