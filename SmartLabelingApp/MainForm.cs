@@ -1163,37 +1163,39 @@ namespace SmartLabelingApp
 
             if (enable)
             {
-                // 1) 무지개 비트맵 재생성
+                // 무지개 비트맵 갱신
                 if (_aiRainbowBg != null) { _aiRainbowBg.Dispose(); _aiRainbowBg = null; }
                 _aiRainbowBg = MakeRainbowBitmap(slot.ClientSize);
 
-                // 2) 슬롯을 완전 투명 모드로
-                slot.UseTransparentBackground = true;          // 중요: 배경 투명 허용
-                slot.FillColor = Color.Transparent;            // 내부 채움 제거
-                slot.BorderColor = Color.Transparent;          // 테두리 색 제거
-                slot.BorderThickness = 0;                      // 테두리 두께 제거
-                slot.CustomBorderThickness = Padding.Empty;    // 커스텀 테두리 제거
+                // 배경은 무지개, 슬롯은 투명 채움만 적용
+                slot.UseTransparentBackground = true;          // 배경 투명 허용
+                slot.FillColor = Color.Transparent;            // 내부 채움만 투명
+                                                               // ★ Border는 건드리지 않음: HighlightTool이 준 라임색 테두리 유지
+                                                               // slot.BorderColor = ... (삭제)
+                                                               // slot.BorderThickness = ... (삭제)
+                                                               // slot.CustomBorderThickness = ... (삭제)
 
-                // 3) 무지개 배경 적용
                 slot.BackgroundImage = _aiRainbowBg;
                 slot.BackgroundImageLayout = ImageLayout.Stretch;
 
-                // 4) 버튼 자신도 투명(배경색으로 무지개가 가려지지 않도록)
+                // 버튼 자체는 투명 배경으로 (무지개 가림 방지)
                 _btnAI.BackColor = Color.Transparent;
             }
             else
             {
                 // 무지개 해제
                 slot.BackgroundImage = null;
-                slot.UseTransparentBackground = false;   // 기본(불투명) 복귀
-                                                         // Fill/Border/Thickness는 HighlightTool이 다음 호출에서 다시 세팅
+                // UseTransparentBackground 유지/복귀는 상관없지만 기본으로 돌리고 싶으면 다음 줄 유지
+                slot.UseTransparentBackground = false;
 
                 if (_aiRainbowBg != null) { _aiRainbowBg.Dispose(); _aiRainbowBg = null; }
 
-                // 버튼 배경도 기본으로(필요시)
+                // 버튼 배경 기본
                 _btnAI.BackColor = Color.Transparent;
+                // Border/Fill은 다음 HighlightTool 호출에서 다시 설정됨
             }
         }
+
 
 
 
@@ -1230,7 +1232,7 @@ namespace SmartLabelingApp
             var slot = _btnAI.Parent as Guna2Panel;
             if (slot != null)
             {
-                slot.BorderColor = Color.Navy;
+                slot.BorderColor = Color.Transparent;
                 slot.FillColor = Color.FromArgb(240, 242, 255);
             }
 

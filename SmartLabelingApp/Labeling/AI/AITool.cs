@@ -225,27 +225,28 @@ namespace SmartLabelingApp
             if (_roiMode && !_roiRectImg.IsEmpty)
             {
                 var scr = c.Transform.ImageRectToScreen(_roiRectImg);
-                using (var br = new SolidBrush(Color.FromArgb(28, 0, 0, 128)))
-                using (var pen = new Pen(Color.Navy, 1f))
-                {
-                    g.FillRectangle(br, scr);
-                    g.DrawRectangle(pen, scr.X, scr.Y, scr.Width, scr.Height);
-                }
-                // 리사이즈 핸들(작은 사각형)
-                var hs = 6f;                  // float 사용
-                void Handle(float x, float y) // 인자 float로 변경
+
+                // 1) 살짝 밝게 채워서 영역 식별
+                using (var fill = new SolidBrush(Color.FromArgb(80, Color.White)))
+                    g.FillRectangle(fill, scr);
+
+                // 2) 무지개 테두리(두께 2~3px 권장)
+                DrawRainbowRect(g, scr, 2f);
+
+                // 3) 리사이즈 핸들(작은 사각형) - 테두리는 중립색으로
+                var hs = 6f;
+                void Handle(float x, float y)
                 {
                     var r = new RectangleF(x - hs, y - hs, hs * 2f, hs * 2f);
                     g.FillRectangle(Brushes.White, r);
-                    g.DrawRectangle(Pens.Navy, r.X, r.Y, r.Width, r.Height); // RectangleF는 좌표로 그리기
+                    g.DrawRectangle(Pens.DimGray, r.X, r.Y, r.Width, r.Height);
                 }
 
+                // 모서리/중간점
                 Handle(scr.Left, scr.Top);
                 Handle(scr.Right, scr.Top);
                 Handle(scr.Left, scr.Bottom);
                 Handle(scr.Right, scr.Bottom);
-
-                // 중간점 계산도 float로 (정수 나눗셈 방지)
                 Handle((scr.Left + scr.Right) * 0.5f, scr.Top);
                 Handle((scr.Left + scr.Right) * 0.5f, scr.Bottom);
                 Handle(scr.Left, (scr.Top + scr.Bottom) * 0.5f);
@@ -315,6 +316,60 @@ namespace SmartLabelingApp
                 _okBtnScr = _cancelBtnScr = Rectangle.Empty;
             }
         }
+        // 무지개 컬러 블렌드
+        private static System.Drawing.Drawing2D.ColorBlend RainbowBlend()
+        {
+            return new System.Drawing.Drawing2D.ColorBlend
+            {
+                Positions = new[] { 0f, 0.2f, 0.4f, 0.6f, 0.8f, 1f },
+                Colors = new[]
+                {
+            Color.FromArgb(255, 255,   0,   0), // Red
+            Color.FromArgb(255, 255, 165,   0), // Orange
+            Color.FromArgb(255, 255, 255,   0), // Yellow
+            Color.FromArgb(255,   0, 128,   0), // Green
+            Color.FromArgb(255,   0,   0, 255), // Blue
+            Color.FromArgb(255, 128,   0, 128), // Purple
+        }
+            };
+        }
+
+        // 사각 ROI를 4변 각각에 맞는 방향으로 무지개 그라디언트로 그리기
+        private static void DrawRainbowRect(Graphics g, RectangleF r, float thickness = 2f)
+        {
+            // Top (좌→우)
+            using (var br = new System.Drawing.Drawing2D.LinearGradientBrush(
+                   new RectangleF(r.Left, r.Top, r.Width, 1f), Color.Red, Color.Violet, 0f))
+            {
+                br.InterpolationColors = RainbowBlend();
+                using (var p = new Pen(br, thickness)) g.DrawLine(p, r.Left, r.Top, r.Right - 1f, r.Top);
+            }
+
+            // Right (상→하)
+            using (var br = new System.Drawing.Drawing2D.LinearGradientBrush(
+                   new RectangleF(r.Right - 1f, r.Top, 1f, r.Height), Color.Red, Color.Violet, 90f))
+            {
+                br.InterpolationColors = RainbowBlend();
+                using (var p = new Pen(br, thickness)) g.DrawLine(p, r.Right - 1f, r.Top, r.Right - 1f, r.Bottom - 1f);
+            }
+
+            // Bottom (우→좌)  ※ 방향 반전
+            using (var br = new System.Drawing.Drawing2D.LinearGradientBrush(
+                   new RectangleF(r.Left, r.Bottom - 1f, r.Width, 1f), Color.Violet, Color.Red, 0f))
+            {
+                br.InterpolationColors = RainbowBlend();
+                using (var p = new Pen(br, thickness)) g.DrawLine(p, r.Right - 1f, r.Bottom - 1f, r.Left, r.Bottom - 1f);
+            }
+
+            // Left (하→상)  ※ 방향 반전
+            using (var br = new System.Drawing.Drawing2D.LinearGradientBrush(
+                   new RectangleF(r.Left, r.Top, 1f, r.Height), Color.Violet, Color.Red, 90f))
+            {
+                br.InterpolationColors = RainbowBlend();
+                using (var p = new Pen(br, thickness)) g.DrawLine(p, r.Left, r.Bottom - 1f, r.Left, r.Top);
+            }
+        }
+
 
         // -------------------- 성능 개선 + 멀티폴리곤 --------------------
         private async void RunSegmentation(ImageCanvas c, RectangleF boxImg, bool autoCommit = false)
