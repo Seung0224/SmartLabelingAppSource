@@ -130,6 +130,7 @@ namespace SmartLabelingApp
         private FlowLayoutPanel _rightTools3;// ★ NEW: SAVE 바 컨테이너
 
         // 우측 툴 버튼들
+        private readonly Guna2Button _btnOpen;
         private readonly Guna2ImageButton _btnPointer;
         private readonly Guna2ImageButton _btnTriangle;
         private readonly Guna2ImageButton _btnBox;
@@ -140,8 +141,6 @@ namespace SmartLabelingApp
         private readonly Guna2ImageButton _btnMask;
         private readonly Guna2ImageButton _btnAI;
         private readonly Guna2ImageButton _btnPolygon;
-
-        private Guna2Button _btnOpen;
         private Guna2Button _btnAdd;
         private Guna2Button _btnSave;
         private Guna2Button _btnExport;
@@ -166,6 +165,12 @@ namespace SmartLabelingApp
         private Control _labelAnchorBtn;        // 라벨 창 앵커(ADD 버튼 슬롯)
         private int _labelSeq = 1;              // 빈 이름일 때 자동 이름 부여용
 
+        // === AI Sub-Mode & ROI persistence ===
+        private enum AiSubMode { Off, Free, Roi }
+        private AiSubMode _aiSubMode = AiSubMode.Off;
+        // 직전 이미지에서의 ROI 정규화 좌표(0~1, x,y,w,h). AI-ROI 모드 유지 시 이미지 전환에 복원.
+        private RectangleF? _lastRoiNorm = null;
+
         private ToolTip _tt = new ToolTip
         {
             AutoPopDelay = 8000,   // 보여지는 시간(ms)
@@ -174,7 +179,6 @@ namespace SmartLabelingApp
             ShowAlways = true,     // 비활성화여도 표시
             IsBalloon = true       // 말풍선 스타일(원하지 않으면 false)
         };
-
         #endregion
 
         #region 4) Initialization & Layout (Constructor)
@@ -596,12 +600,19 @@ namespace SmartLabelingApp
                 SetTool(ToolMode.Mask, _btnMask);
                 if (_brushWin != null && _brushWin.Visible) _brushWin.Hide();
             };
-            _btnAI.Click += delegate
-            {
-                SetTool(ToolMode.AI, _btnAI);
-                if (_brushWin != null && _brushWin.Visible) _brushWin.Hide();
-            };
 
+            // [ADD] AI 버튼 좌/우 클릭 분기 (좌: Freeform, 우: ROI 고정모드)
+            _btnAI.MouseUp += (s, e) =>
+            {
+                if (e.Button == MouseButtons.Left)
+                {
+                    EnterAiFreeformMode();   // 라임색 하이라이트 (기본 HighlightTool 사용)
+                }
+                else if (e.Button == MouseButtons.Right)
+                {
+                    EnterAiRoiMode();        // 남색 하이라이트
+                }
+            };
 
             _tt.SetToolTip(_btnPointer, "포인터: 선택/이동/편집 모드로 전환합니다.");
             _tt.SetToolTip(_btnCircle, "원/타원: 드래그하여 원형(타원) 마스크를 그립니다.");
@@ -699,7 +710,20 @@ namespace SmartLabelingApp
 
                 if (System.IO.File.Exists(path) && IsImageFile(path))
                 {
+                    // ROI 모드면 현재 이미지의 ROI 정규화 좌표 저장
+                    if (_aiSubMode == AiSubMode.Roi && _canvas != null && _canvas.Image != null)
+                    {
+                        var ai = _canvas.GetTool(ToolMode.AI) as AITool;
+                        if (ai != null) _lastRoiNorm = ai.GetRoiNormalized(_canvas.Transform.ImageSize.ToSize());
+                    }
                     LoadImageAtPath(path);
+
+                    // ROI 모드면 동일 비율/위치로 ROI 복원
+                    if (_aiSubMode == AiSubMode.Roi)
+                    {
+                        var ai2 = _canvas.GetTool(ToolMode.AI) as AITool;
+                        ai2?.EnsureRoiForCurrentImage(_canvas, _lastRoiNorm);
+                    }
 
                     _canvas.Focus();
                 }
@@ -757,6 +781,24 @@ namespace SmartLabelingApp
                 HighlightTool(_btnEraser, mode == ToolMode.Eraser, iconPixel);
                 HighlightTool(_btnMask, mode == ToolMode.Mask, iconPixel);
                 HighlightTool(_btnAI, mode == ToolMode.AI, iconPixel);
+
+                // AI 모드/ROI 서브모드 하이라이트 & 해제 처리
+                if (mode != ToolMode.AI)
+                {
+                    _aiSubMode = AiSubMode.Off;
+                    var aiTool = _canvas.GetTool(ToolMode.AI) as AITool;
+                    aiTool?.DisableRoiMode(_canvas);
+                }
+                else if (_aiSubMode == AiSubMode.Roi)
+                {
+                    var slot = _btnAI.Parent as Guna2Panel;
+                    if (slot != null)
+                    {
+                        slot.BorderColor = Color.Navy;
+                        slot.FillColor = Color.FromArgb(240, 242, 255);
+                    }
+                }
+
 
                 if (mode == ToolMode.Brush || mode == ToolMode.Eraser)
                 {
@@ -899,6 +941,7 @@ namespace SmartLabelingApp
         #endregion
 
         #region 5) UI Helpers (유틸/파일/레이아웃 보조)
+
         private static string GetLastExportZipPathFile()
         {
             var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -1092,6 +1135,49 @@ namespace SmartLabelingApp
                 slot.FillColor = active ? Color.FromArgb(245, 245, 245) : Color.Transparent;
             }
         }
+        // AI 서브모드 진입 함수들
+        private void EnterAiFreeformMode()
+        {
+            // 기본 AI(프리폼) — 라임색 하이라이트
+            SetTool(ToolMode.AI, _btnAI);
+            _aiSubMode = AiSubMode.Free;
+
+            // HighlightTool이 라임색을 입혀줌
+            HighlightTool(_btnAI, true, RIGHT_ICON_PX);
+
+            // ROI 모드는 반드시 끈다
+            var ai = _canvas.GetTool(ToolMode.AI) as AITool;
+            ai?.DisableRoiMode(_canvas);
+
+            if (_brushWin != null && _brushWin.Visible) _brushWin.Hide();
+            if (!_canvas.Focused) _canvas.Focus();
+        }
+
+        private void EnterAiRoiMode()
+        {
+            // AI + ROI 서브모드 — 남색 하이라이트
+            SetTool(ToolMode.AI, _btnAI);
+            _aiSubMode = AiSubMode.Roi;
+
+            // 기본 크기 변화 효과는 유지(아이콘 커짐)
+            HighlightTool(_btnAI, true, RIGHT_ICON_PX);
+
+            // 슬롯 색만 남색으로 오버라이드
+            var slot = _btnAI.Parent as Guna2Panel;
+            if (slot != null)
+            {
+                slot.BorderColor = Color.Navy;
+                slot.FillColor = Color.FromArgb(240, 242, 255);
+            }
+
+            // ROI 모드 켜고(직전 ROI 정규화 좌표 복원)
+            var ai = _canvas.GetTool(ToolMode.AI) as AITool;
+            ai?.EnableRoiMode(_canvas, _lastRoiNorm);
+
+            if (_brushWin != null && _brushWin.Visible) _brushWin.Hide();
+            if (!_canvas.Focused) _canvas.Focus();
+        }
+
         private Guna2Panel WrapToolSlot(Guna2ImageButton btn, int width, int height)
         {
             var slot = new Guna2Panel
@@ -1455,7 +1541,6 @@ namespace SmartLabelingApp
                 if (this.ActiveControl != null && !(this.ActiveControl is Form)) this.ActiveControl.Focus();
             }
         }
-
 
 
         private string CreateResultZip(string resultRoot, string zipFileName = null, Action<int, string> onProgress = null)
@@ -2232,6 +2317,13 @@ namespace SmartLabelingApp
                     _yoloLoadedForCurrentImage = false;
                     TryBindAnnotationRootNear(Path.GetDirectoryName(_currentImagePath));
                     _yoloLoadedForCurrentImage = TryLoadYoloForCurrentImage();
+
+                    // AI-ROI 모드면 새 이미지에 ROI 복원
+                    if (_aiSubMode == AiSubMode.Roi)
+                    {
+                        var ai = _canvas.GetTool(ToolMode.AI) as AITool;
+                        ai?.EnsureRoiForCurrentImage(_canvas, _lastRoiNorm);
+                    }
                 }
 
                 BeginInvoke(new Action(() =>

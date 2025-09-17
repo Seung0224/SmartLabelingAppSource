@@ -13,6 +13,7 @@ namespace SmartLabelingApp
     /// <summary>
     /// AI Rectangle tool (비동기 실행 + ROI 기반 세그멘터와 연동)
     /// - 드래그한 박스 내에서 "여러 개" 폴리곤을 프리뷰 후 한 번에 확정 가능하도록 업데이트
+    /// - (추가) ROI 모드(우클릭) + Ctrl+D 자동분류/자동커밋 + ROI 이동/리사이즈 + 정규화 ROI API
     /// </summary>
     public sealed class AITool : ITool
     {
@@ -41,6 +42,7 @@ namespace SmartLabelingApp
             if (k > 256) k = 256;      // 안전 상한
             _previewVertexCount = k;
         }
+
         private static Bitmap CloneForWorker(Image img)
         {
             // Image → 독립된 Bitmap 복제 (인덱스 포맷은 32bpp로)
@@ -55,7 +57,7 @@ namespace SmartLabelingApp
             return srcBmp.Clone(rect, fmt); // 완전한 딥 카피
         }
 
-        public bool IsEditingActive => _dragging || (_previewPolys != null && _previewPolys.Count > 0);
+        public bool IsEditingActive => _dragging || (_previewPolys != null && _previewPolys.Count > 0) || _roiHandle != RoiHandle.None;
 
         public void OnMouseDown(ImageCanvas c, MouseEventArgs e)
         {
@@ -76,9 +78,23 @@ namespace SmartLabelingApp
                 }
             }
 
+            // === ROI 편집 진입(좌클릭) ===
+            if (_roiMode && c.Image != null && e.Button == MouseButtons.Left)
+            {
+                var h = HitTestRoi(c, e.Location);
+                if (h != RoiHandle.None)
+                {
+                    _roiHandle = h;
+                    _roiStartRectImg = _roiRectImg;
+                    _roiDragStartScr = e.Location;
+                    c.Capture = true;
+                    return;
+                }
+            }
+
+            // 기본 드래그 박스 시작(좌클릭)
             if (e.Button == MouseButtons.Left && c.Image != null)
             {
-                // start drawing rectangle
                 var imgPt = c.Transform.ScreenToImage(e.Location);
                 _dragging = true;
                 _dragStartImg = imgPt;
@@ -92,6 +108,45 @@ namespace SmartLabelingApp
         public void OnMouseMove(ImageCanvas c, MouseEventArgs e)
         {
             if (c == null) return;
+
+            // === ROI 이동/리사이즈 중 ===
+            if (_roiMode && _roiHandle != RoiHandle.None)
+            {
+                var dx = e.Location.X - _roiDragStartScr.X;
+                var dy = e.Location.Y - _roiDragStartScr.Y;
+
+                // 스크린 델타 -> 이미지 델타
+                var p0 = c.Transform.ScreenToImage(_roiDragStartScr);
+                var p1 = c.Transform.ScreenToImage(new Point(_roiDragStartScr.X + dx, _roiDragStartScr.Y + dy));
+                float ddx = p1.X - p0.X;
+                float ddy = p1.Y - p0.Y;
+
+                var r = _roiStartRectImg;
+
+                switch (_roiHandle)
+                {
+                    case RoiHandle.Move: r.X += ddx; r.Y += ddy; break;
+                    case RoiHandle.N: r.Y += ddy; r.Height -= ddy; break;
+                    case RoiHandle.S: r.Height += ddy; break;
+                    case RoiHandle.W: r.X += ddx; r.Width -= ddx; break;
+                    case RoiHandle.E: r.Width += ddx; break;
+                    case RoiHandle.NW: r.X += ddx; r.Width -= ddx; r.Y += ddy; r.Height -= ddy; break;
+                    case RoiHandle.NE: r.Width += ddx; r.Y += ddy; r.Height -= ddy; break;
+                    case RoiHandle.SW: r.X += ddx; r.Width -= ddx; r.Height += ddy; break;
+                    case RoiHandle.SE: r.Width += ddx; r.Height += ddy; break;
+                }
+
+                // 최소 크기 + 경계 클램프
+                if (r.Width < 4) r.Width = 4;
+                if (r.Height < 4) r.Height = 4;
+                r = ClampToImage(r, c.Transform.ImageSize);
+
+                _roiRectImg = r;
+                c.Invalidate();
+                return;
+            }
+
+            // 기본 드래그 박스 갱신
             if (_dragging)
             {
                 var pt = c.Transform.ScreenToImage(e.Location);
@@ -103,6 +158,17 @@ namespace SmartLabelingApp
         public void OnMouseUp(ImageCanvas c, MouseEventArgs e)
         {
             if (c == null) return;
+
+            // === ROI 편집 종료 ===
+            if (_roiMode && _roiHandle != RoiHandle.None && e.Button == MouseButtons.Left)
+            {
+                _roiHandle = RoiHandle.None;
+                c.Capture = false;
+                c.Invalidate();
+                return;
+            }
+
+            // 기본 드래그 박스 확정
             if (_dragging && e.Button == MouseButtons.Left)
             {
                 _dragging = false;
@@ -115,13 +181,24 @@ namespace SmartLabelingApp
                     return;
                 }
 
-                RunSegmentation(c, _rectImg); // async
+                RunSegmentation(c, _rectImg, false); // async
             }
         }
 
         public void OnKeyDown(ImageCanvas c, KeyEventArgs e)
         {
             if (c == null) return;
+
+            // === Ctrl + D : ROI 모드에서 현재 ROI로 세그먼트 실행 + 자동 커밋 ===
+            if (_roiMode && c.Image != null && e.Control && e.KeyCode == Keys.D)
+            {
+                if (_roiRectImg.Width >= 4 && _roiRectImg.Height >= 4)
+                {
+                    RunSegmentation(c, _roiRectImg, true); // 자동 커밋
+                    e.Handled = e.SuppressKeyPress = true;
+                    return;
+                }
+            }
 
             if (_previewPolys != null && _previewPolys.Count > 0)
             {
@@ -143,6 +220,37 @@ namespace SmartLabelingApp
             if (c == null || g == null) return;
 
             g.SmoothingMode = SmoothingMode.AntiAlias;
+
+            // === ROI overlay (남색) ===
+            if (_roiMode && !_roiRectImg.IsEmpty)
+            {
+                var scr = c.Transform.ImageRectToScreen(_roiRectImg);
+                using (var br = new SolidBrush(Color.FromArgb(28, 0, 0, 128)))
+                using (var pen = new Pen(Color.Navy, 1f))
+                {
+                    g.FillRectangle(br, scr);
+                    g.DrawRectangle(pen, scr.X, scr.Y, scr.Width, scr.Height);
+                }
+                // 리사이즈 핸들(작은 사각형)
+                var hs = 6f;                  // float 사용
+                void Handle(float x, float y) // 인자 float로 변경
+                {
+                    var r = new RectangleF(x - hs, y - hs, hs * 2f, hs * 2f);
+                    g.FillRectangle(Brushes.White, r);
+                    g.DrawRectangle(Pens.Navy, r.X, r.Y, r.Width, r.Height); // RectangleF는 좌표로 그리기
+                }
+
+                Handle(scr.Left, scr.Top);
+                Handle(scr.Right, scr.Top);
+                Handle(scr.Left, scr.Bottom);
+                Handle(scr.Right, scr.Bottom);
+
+                // 중간점 계산도 float로 (정수 나눗셈 방지)
+                Handle((scr.Left + scr.Right) * 0.5f, scr.Top);
+                Handle((scr.Left + scr.Right) * 0.5f, scr.Bottom);
+                Handle(scr.Left, (scr.Top + scr.Bottom) * 0.5f);
+                Handle(scr.Right, (scr.Top + scr.Bottom) * 0.5f);
+            }
 
             // 1) dragging rectangle (dashed)
             if (_dragging && !_rectImg.IsEmpty)
@@ -209,10 +317,11 @@ namespace SmartLabelingApp
         }
 
         // -------------------- 성능 개선 + 멀티폴리곤 --------------------
-        private async void RunSegmentation(ImageCanvas c, RectangleF boxImg)
+        private async void RunSegmentation(ImageCanvas c, RectangleF boxImg, bool autoCommit = false)
         {
             if (_aiBusy) return;    // 이미 실행 중이면 무시
             _aiBusy = true;
+            _autoCommitNextPreview = autoCommit;
 
             var prompt = AISegmenterPrompt.FromBox(boxImg);
             List<List<PointF>> polys = null;
@@ -270,6 +379,13 @@ namespace SmartLabelingApp
 
             _rectImg = RectangleF.Empty;
             c.Invalidate();
+
+            // ★ Ctrl+D 등 autoCommit 요청 시 즉시 커밋
+            if (_autoCommitNextPreview)
+            {
+                _autoCommitNextPreview = false;
+                CommitPreview(c);
+            }
         }
 
         // -------------------------------------------------------
@@ -428,6 +544,111 @@ namespace SmartLabelingApp
                     g.DrawLine(p, r.Right - 4, r.Top + 4, r.Left + 4, r.Bottom - 4);
                 }
             }
+        }
+
+        // ========================= [AI ROI mode] Public API =========================
+
+        // 외부(MainForm 등)에서 ROI 모드를 켜며 초기 정규화 ROI를 전달 가능
+        public void EnableRoiMode(ImageCanvas c, RectangleF? initialNorm = null)
+        {
+            _roiMode = true;
+            if (c?.Image != null)
+            {
+                var sz = c.Transform.ImageSize;
+                _roiRectImg = initialNorm.HasValue ? DenormalizeRect(initialNorm.Value, sz)
+                                                   : (_roiRectImg.IsEmpty ? DefaultCenterRoi(sz) : _roiRectImg);
+                _roiRectImg = ClampToImage(_roiRectImg, sz);
+                c.Invalidate();
+            }
+        }
+
+        public void DisableRoiMode(ImageCanvas c)
+        {
+            _roiMode = false;
+            _roiHandle = RoiHandle.None;
+            c?.Invalidate();
+        }
+
+        public RectangleF? GetRoiNormalized(Size imgSize)
+        {
+            if (!_roiMode || _roiRectImg.IsEmpty) return null;
+            return NormalizeRect(_roiRectImg, imgSize);
+        }
+
+        // 새 이미지 로드시 직전 ROI를 동일 비율로 재생성
+        public void EnsureRoiForCurrentImage(ImageCanvas c, RectangleF? lastNorm)
+        {
+            if (!_roiMode || c?.Image == null) return;
+            var sz = c.Transform.ImageSize;
+            if (lastNorm.HasValue) _roiRectImg = DenormalizeRect(lastNorm.Value, sz);
+            if (_roiRectImg.IsEmpty) _roiRectImg = DefaultCenterRoi(sz);
+            _roiRectImg = ClampToImage(_roiRectImg, sz);
+            c.Invalidate();
+        }
+
+        // ========================= [AI ROI mode] Internals =========================
+
+        private bool _roiMode = false;
+        private RectangleF _roiRectImg = RectangleF.Empty;
+
+        private enum RoiHandle { None, Move, N, S, E, W, NE, NW, SE, SW }
+        private RoiHandle _roiHandle = RoiHandle.None;
+        private Point _roiDragStartScr;
+        private RectangleF _roiStartRectImg;
+
+        // Ctrl+D auto-commit flag
+        private bool _autoCommitNextPreview = false;
+
+        private static RectangleF NormalizeRect(RectangleF r, SizeF img) =>
+            img.Width <= 0 || img.Height <= 0 ? RectangleF.Empty :
+            new RectangleF(r.X / img.Width, r.Y / img.Height, r.Width / img.Width, r.Height / img.Height);
+        private static RectangleF NormalizeRect(RectangleF r, Size img) =>
+            NormalizeRect(r, new SizeF(img.Width, img.Height));
+
+        private static RectangleF DenormalizeRect(RectangleF rNorm, SizeF img) =>
+            new RectangleF(rNorm.X * img.Width, rNorm.Y * img.Height, rNorm.Width * img.Width, rNorm.Height * img.Height);
+        private static RectangleF DenormalizeRect(RectangleF rNorm, Size img) =>
+            DenormalizeRect(rNorm, new SizeF(img.Width, img.Height));
+
+        private static RectangleF DefaultCenterRoi(SizeF img)
+        {
+            float w = img.Width * 0.5f, h = img.Height * 0.5f;
+            return new RectangleF((img.Width - w) * 0.5f, (img.Height - h) * 0.5f, w, h);
+        }
+        private static RectangleF DefaultCenterRoi(Size img) =>
+            DefaultCenterRoi(new SizeF(img.Width, img.Height));
+
+        private static RectangleF ClampToImage(RectangleF r, SizeF img)
+        {
+            float x = Math.Max(0, Math.Min(r.X, img.Width - 1));
+            float y = Math.Max(0, Math.Min(r.Y, img.Height - 1));
+            float w = Math.Max(1, Math.Min(r.Width, img.Width - x));
+            float h = Math.Max(1, Math.Min(r.Height, img.Height - y));
+            return new RectangleF(x, y, w, h);
+        }
+        private static RectangleF ClampToImage(RectangleF r, Size img) =>
+            ClampToImage(r, new SizeF(img.Width, img.Height));
+
+        private RoiHandle HitTestRoi(ImageCanvas c, Point screenPt)
+        {
+            if (_roiRectImg.IsEmpty) return RoiHandle.None;
+            var scr = c.Transform.ImageRectToScreen(_roiRectImg);
+            const int pad = 6;
+            bool inside = scr.Contains(screenPt);
+            bool L = Math.Abs(screenPt.X - scr.Left) <= pad;
+            bool R = Math.Abs(screenPt.X - scr.Right) <= pad;
+            bool T = Math.Abs(screenPt.Y - scr.Top) <= pad;
+            bool B = Math.Abs(screenPt.Y - scr.Bottom) <= pad;
+
+            if (L && T) return RoiHandle.NW;
+            if (R && T) return RoiHandle.NE;
+            if (L && B) return RoiHandle.SW;
+            if (R && B) return RoiHandle.SE;
+            if (T) return RoiHandle.N;
+            if (B) return RoiHandle.S;
+            if (L) return RoiHandle.W;
+            if (R) return RoiHandle.E;
+            return inside ? RoiHandle.Move : RoiHandle.None;
         }
     }
 }
