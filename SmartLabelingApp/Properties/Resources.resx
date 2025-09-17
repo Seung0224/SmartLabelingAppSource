@@ -160,8 +160,14 @@
   <data name="Toggleoff" type="System.Resources.ResXFileRef, System.Windows.Forms">
     <value>Resources\Toggleoff.png;System.Drawing.Bitmap, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</value>
   </data>
+  <data name="Toggleoff2" type="System.Resources.ResXFileRef, System.Windows.Forms">
+    <value>Resources\Toggleoff2.png;System.Drawing.Bitmap, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</value>
+  </data>
   <data name="Toggleon" type="System.Resources.ResXFileRef, System.Windows.Forms">
     <value>Resources\Toggleon.png;System.Drawing.Bitmap, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</value>
+  </data>
+  <data name="Toggleon2" type="System.Resources.ResXFileRef, System.Windows.Forms">
+    <value>Resources\Toggleon2.png;System.Drawing.Bitmap, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</value>
   </data>
   <data name="Triangle" type="System.Resources.ResXFileRef, System.Windows.Forms">
     <value>Resources\Triangle.png;System.Drawing.Bitmap, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</value>

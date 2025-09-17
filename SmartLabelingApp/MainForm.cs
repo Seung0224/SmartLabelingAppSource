@@ -36,7 +36,7 @@ namespace SmartLabelingApp
         private const int RIGHT_ICON_PAD = 2; // 슬롯 안쪽 여백(padding)
 
         private const int RIGHT_BAR1_H = 446; // 상단 아이콘바 높이
-        private const int RIGHT_BAR2_H = 368; // 라벨링 ADD 바 높이
+        private const int RIGHT_BAR2_H = 328; // 라벨링 ADD 바 높이
         private const int RIGHT_BAR_GAP = 4;  // 바 사이 여백
 
         // 바(SAVE) + 레이아웃 보정 상수
@@ -143,6 +143,9 @@ namespace SmartLabelingApp
         private readonly Guna2ImageButton _btnPolygon;
         private readonly Guna2ImageButton _btnPrev;
         private readonly Guna2ImageButton _btnNext;
+        private readonly Guna2ImageButton _btnToggle;
+        private Guna2Panel _slotToggle;
+        private bool _toggleOn = false;
         private Panel _navRow;
         private Guna2Button _btnAdd;
         private Guna2Button _btnExport;
@@ -411,6 +414,7 @@ namespace SmartLabelingApp
                 if (_btnExport != null) { _btnExport.Width = w3; _btnExport.Margin = new Padding(0, 0, 0, ACTION3_GAP); }
                 if (_btnTrain != null) { _btnTrain.Width = w3; _btnTrain.Margin = new Padding(0, 0, 0, ACTION3_GAP); }
                 if (_navRow != null) { _navRow.Width = w3; LayoutNavRow(); }
+                if (_slotToggle != null) { _slotToggle.Width = w3; }
                 if (_btnInfer != null) { _btnInfer.Width = w3; _btnInfer.Margin = new Padding(0, 0, 0, ACTION3_GAP); }
             };
 
@@ -497,9 +501,13 @@ namespace SmartLabelingApp
 
             _btnPrev = CreateToolIcon(Properties.Resources.Prev, "Prev", RIGHT_SLOT_H, RIGHT_ICON_PX);
             _btnNext = CreateToolIcon(Properties.Resources.Next, "Next", RIGHT_SLOT_H, RIGHT_ICON_PX);
-
+            _btnToggle = CreateToolIcon(Properties.Resources.Toggleoff2, "Toggle: OFF", RIGHT_SLOT_H, 38);
+            
             var prevSlot = WrapToolSlot(_btnPrev, innerW3 / 2, RIGHT_SLOT_H);
             var nextSlot = WrapToolSlot(_btnNext, innerW3 / 2, RIGHT_SLOT_H);
+            _slotToggle = WrapToolSlot(_btnToggle, innerW3, RIGHT_SLOT_H);
+
+            _btnToggle.Click += OnToggleClick;
 
             _navRow = new FlowLayoutPanel
             {
@@ -533,6 +541,7 @@ namespace SmartLabelingApp
             _btnInfer.Click += OnInferClick;
             _rightTools3.Controls.Add(_btnInfer);
 
+            _rightTools3.Controls.Add(_slotToggle);
             // 파일/작업 플로우
             _tt.SetToolTip(_btnOpen, "이미지 파일 또는 폴더를 열어 작업을 시작합니다.");
             _tt.SetToolTip(_btnAdd, "새 라벨(클래스)을 추가합니다.");
@@ -943,6 +952,37 @@ namespace SmartLabelingApp
         #endregion
 
         #region 5) UI Helpers (유틸/파일/레이아웃 보조)
+
+        private void OnToggleClick(object sender, EventArgs e)
+        {
+            _toggleOn = !_toggleOn;
+
+            // 아이콘/툴팁 전환 (CreateToolIcon이 내부 툴팁도 설정하지만, 여기서는 _tt로 갱신해줌)
+            _btnToggle.Image = MakeNearWhiteTransparent(_toggleOn ? Properties.Resources.Toggleon2 : Properties.Resources.Toggleoff2, 248);
+
+            // 슬롯 색 살짝 강조/해제
+            if (_slotToggle != null)
+            {
+                if (_toggleOn)
+                {
+                    _slotToggle.BorderColor = Color.MediumSeaGreen;
+                    _slotToggle.FillColor = Color.FromArgb(235, 248, 239); // 연한 그린
+                }
+                else
+                {
+                    _slotToggle.BorderColor = Color.Transparent;
+                    _slotToggle.FillColor = Color.Transparent;
+                }
+            }
+
+            // 실제 표시/해제 로직 연결 지점
+            // TODO: 여기에서 원하는 표시 동작 수행 (예: 오버레이 토글, 라벨 표시 토글 등)
+            // e.g., _canvas?.SetSomethingVisible(_toggleOn);
+
+            if (_canvas != null && !_canvas.Focused) _canvas.Focus();
+        }
+
+
         private void OnPrevClick(object sender, EventArgs e)
         {
             try { NavigateImage(-1); } catch { /* 무시 */ }

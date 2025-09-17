@@ -203,9 +203,29 @@ namespace SmartLabelingApp.Properties {
         /// <summary>
         ///   System.Drawing.Bitmap 형식의 지역화된 리소스를 찾습니다.
         /// </summary>
+        internal static System.Drawing.Bitmap Toggleoff2 {
+            get {
+                object obj = ResourceManager.GetObject("Toggleoff2", resourceCulture);
+                return ((System.Drawing.Bitmap)(obj));
+            }
+        }
+        
+        /// <summary>
+        ///   System.Drawing.Bitmap 형식의 지역화된 리소스를 찾습니다.
+        /// </summary>
         internal static System.Drawing.Bitmap Toggleon {
             get {
                 object obj = ResourceManager.GetObject("Toggleon", resourceCulture);
+                return ((System.Drawing.Bitmap)(obj));
+            }
+        }
+        
+        /// <summary>
+        ///   System.Drawing.Bitmap 형식의 지역화된 리소스를 찾습니다.
+        /// </summary>
+        internal static System.Drawing.Bitmap Toggleon2 {
+            get {
+                object obj = ResourceManager.GetObject("Toggleon2", resourceCulture);
                 return ((System.Drawing.Bitmap)(obj));
             }
         }
