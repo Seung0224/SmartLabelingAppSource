@@ -624,7 +624,14 @@ namespace SmartLabelingApp
             _tt.SetToolTip(_btnBrush, "브러시: 브러시로 마스크를 칠합니다.");
             _tt.SetToolTip(_btnEraser, "지우개: 마스크를 지웁니다.");
             _tt.SetToolTip(_btnMask, "Reverse 토글: 현재 그린 영역을 반전 시킵니다.");
-            _tt.SetToolTip(_btnAI, "AI 보조: 자동 세그먼트/스마트 선택을 실행합니다.");
+            _tt.SetToolTip(_btnAI,
+             "AI 도구\n" +
+             "• 좌클릭: 프리폼 박스 그려 자동 분할 (Enter=확정, Esc=취소)\n" +
+             "• 우클릭: 자동 AI Labeling Mode — 사각형 생성/이동/리사이즈\n" +
+             "• Ctrl+D: 현재 ROI로 즉시 분할 후 폴리곤 확정\n" +
+             "• Ctrl+S: 저장(툴 유지, 편집 해제)\n" +
+             "• Ctrl+E: 현재 폴더 ‘직속’ 이미지 일괄 자동 라벨링(기존 라벨 있으면 스킵)\n" +
+             "※ 라벨은 ‘활성 라벨’로 적용, ROI는 다음 이미지에도 같은 비율로 복원");
 
             // 슬롯 래핑 후 상단 바에 배치
             int innerWSlot = RIGHT_DOCK_W - _rightToolDock.Padding.Horizontal;
@@ -753,7 +760,7 @@ namespace SmartLabelingApp
             _canvas.ToolEditBegan += () => HideBrushWindow();
 
             // ✅ 기본 라벨을 캔버스 생성 이후에 추가/선택
-            AddDefaultLabelIfMissing();
+            // AddDefaultLabelIfMissing();
 
             _canvas.MouseDown += (s, e) =>
             {
@@ -1545,6 +1552,198 @@ namespace SmartLabelingApp
             }
             return null;
         }
+        // [ADD] 현재 트리에서 모든 이미지 경로 열거
+        private IEnumerable<string> EnumerateAllImagePathsFromTree()
+        {
+            var list = new List<string>();
+            if (_fileTree != null)
+            {
+                foreach (TreeNode n in _fileTree.Nodes)
+                    CollectImagePathsRecursive(n, list);
+            }
+            return list;
+        }
+        // [ADD] 트리에서 현재 선택된 이미지 경로
+        private string GetSelectedImagePathFromTree()
+        {
+            if (_fileTree?.SelectedNode == null) return null;
+            var n = _fileTree.SelectedNode;
+            // 너희 트리 규칙: 경로는 Tag에 들어있는 것이 일반적
+            string path = n.Tag as string;
+            if (string.IsNullOrEmpty(path)) path = n.ToolTipText;
+            if (string.IsNullOrEmpty(path)) path = n.Text;
+            return path;
+        }
+
+        // [ADD] 현재 선택 노드의 최상위(루트) 폴더 경로
+        private string GetDatasetRootFolderOfSelected()
+        {
+            if (_fileTree?.SelectedNode == null) return null;
+            TreeNode root = _fileTree.SelectedNode;
+            while (root.Parent != null) root = root.Parent;
+            // 루트 노드 Tag에 폴더 경로를 넣는 게 일반적
+            string rootPath = root.Tag as string;
+            if (string.IsNullOrEmpty(rootPath)) rootPath = root.ToolTipText;
+            if (string.IsNullOrEmpty(rootPath)) rootPath = root.Text;
+            // 폴더 경로만 남도록 정리
+            if (!string.IsNullOrEmpty(rootPath) && System.IO.File.Exists(rootPath))
+                rootPath = System.IO.Path.GetDirectoryName(rootPath);
+            return rootPath;
+        }
+
+        // [ADD] 현재 선택 이미지가 들어있는 폴더(= TopDirectoryOnly 대상 폴더)
+        private string GetCurrentImageFolder()
+        {
+            var sel = GetSelectedImagePathFromTree();
+            return string.IsNullOrEmpty(sel) ? null : System.IO.Path.GetDirectoryName(sel);
+        }
+
+        // [ADD] 지정 폴더의 "직속" 이미지들만 열거 (하위 폴더 제외)
+        private IEnumerable<string> EnumerateTopImagesInFolder(string folder)
+        {
+            if (string.IsNullOrEmpty(folder) || !System.IO.Directory.Exists(folder))
+                yield break;
+
+            foreach (var p in System.IO.Directory.EnumerateFiles(folder, "*.*", System.IO.SearchOption.TopDirectoryOnly))
+            {
+                if (IsImageFile(p)) yield return p;
+            }
+        }
+
+        // (이미 IsImageFile(string) 이 있으면 아래는 넣지 마세요)
+        // private static bool IsImageFile(string path)
+        // {
+        //     var ext = System.IO.Path.GetExtension(path)?.ToLowerInvariant();
+        //     return ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".bmp" || ext == ".tif" || ext == ".tiff" || ext == ".webp";
+        // }
+
+
+        private void CollectImagePathsRecursive(TreeNode node, List<string> acc)
+        {
+            if (node == null) return;
+
+            // TreeNode.Tag나 Text에서 경로 꺼내는 기존 규칙 활용
+            string path = node.Tag as string;
+            if (string.IsNullOrEmpty(path)) path = node.ToolTipText; // 프로젝트마다 다름 — 보조
+            if (string.IsNullOrEmpty(path)) path = node.Text;
+
+            if (!string.IsNullOrEmpty(path) && System.IO.File.Exists(path) && IsImageFile(path))
+                acc.Add(path);
+
+            foreach (TreeNode ch in node.Nodes)
+                CollectImagePathsRecursive(ch, acc);
+        }
+
+
+        // [ADD] 전체 이미지 자동 라벨링(현재 활성 라벨 사용, 실패/스킵 카운트, 진행률 표시)
+        private async void StartAutoLabelAllImagesAsync()
+        {
+            try
+            {
+                RectangleF? roiSeed = null;
+                {
+                    var aiSeed = _canvas.GetTool(ToolMode.AI) as AITool;
+                    if (aiSeed != null)
+                        roiSeed = aiSeed.GetRoiNormalized(_canvas.Transform.ImageSize.ToSize());
+                }
+
+                var baseDir = GetCurrentImageFolder();
+                var paths = EnumerateTopImagesInFolder(baseDir).OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToList();
+
+                if (paths.Count == 0)
+                {
+                    new Guna.UI2.WinForms.Guna2MessageDialog
+                    {
+                        Parent = this,
+                        Caption = "Auto Label",
+                        Text = "라벨링할 이미지가 없습니다.",
+                        Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
+                        Icon = Guna.UI2.WinForms.MessageDialogIcon.Warning,
+                        Style = Guna.UI2.WinForms.MessageDialogStyle.Light
+                    }.Show();
+                    return;
+                }
+
+                int total = paths.Count;
+                int labeled = 0, skipped = 0, failed = 0;
+
+                using (var overlay = new ProgressOverlay(this, "Auto Labeling...", true))
+                {
+                    for (int i = 0; i < total; i++)
+                    {
+                        string path = paths[i];
+
+                        overlay.Report((i * 100) / total, $"{i + 1}/{total} - {System.IO.Path.GetFileName(path)}");
+
+                        try
+                        {
+                            // 이미지 로드
+                            LoadImageAtPath(path);
+
+                            // [ADD] ROI 복원(같은 비율/위치로)
+                            var ai = _canvas.GetTool(ToolMode.AI) as AITool;
+                            ai?.EnsureRoiForCurrentImage(_canvas, roiSeed);
+
+                            // 이미 도형이 하나라도 있으면 스킵
+                            if (_canvas != null && _canvas.Shapes != null && _canvas.Shapes.Count > 0)
+                            {
+                                skipped++;
+                                continue;
+                            }
+
+                            // [CHG] 전체 프레임 자동 라벨링 → "현재 ROI로" 자동 라벨링
+                            if (ai == null)
+                            {
+                                failed++;
+                                continue;
+                            }
+                            bool ok = await ai.AutoLabelCurrentRoiAndCommitAsync(_canvas);
+                            if (!ok)
+                            {
+                                failed++;
+                                continue;
+                            }
+
+                            // 저장 (AI 모드 유지, 선택/편집 잔상 없음)
+                            OnSaveClick(_btnSave, EventArgs.Empty);
+
+                            labeled++;
+                        }
+                        catch
+                        {
+                            failed++;
+                            // 계속 진행
+                        }
+                    }
+
+                    overlay.Report(100, "완료");
+                }
+
+                // 결과 요약(간단 메시지). 필요시 exportResultDialog로 교체 가능
+                new Guna.UI2.WinForms.Guna2MessageDialog
+                {
+                    Parent = this,
+                    Caption = "Auto Label 완료",
+                    Text = $"총 {total}개\n라벨링: {labeled}\n스킵(기존 도형 있음): {skipped}\n실패: {failed}",
+                    Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
+                    Icon = Guna.UI2.WinForms.MessageDialogIcon.Information,
+                    Style = Guna.UI2.WinForms.MessageDialogStyle.Light
+                }.Show();
+            }
+            catch (Exception ex)
+            {
+                new Guna.UI2.WinForms.Guna2MessageDialog
+                {
+                    Parent = this,
+                    Caption = "Auto Label",
+                    Text = "오류: " + ex.Message,
+                    Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
+                    Icon = Guna.UI2.WinForms.MessageDialogIcon.Error,
+                    Style = Guna.UI2.WinForms.MessageDialogStyle.Light
+                }.Show();
+            }
+        }
+
 
         string pickedPath = "";
         private async void OnExportClick(object sender, EventArgs e)
@@ -1815,6 +2014,102 @@ namespace SmartLabelingApp
             if (keyData == (Keys.Control | Keys.S))
             {
                 OnSaveClick(_btnSave, EventArgs.Empty); // 또는 내부 저장 호출
+                return true;
+            }
+            if (keyData == (Keys.Control | Keys.E))
+            {
+                // AI 모드가 아니면 안내
+                if (_canvas == null || _canvas.Mode != ToolMode.AI)
+                {
+                    new Guna.UI2.WinForms.Guna2MessageDialog
+                    {
+                        Parent = this,
+                        Caption = "Auto Label",
+                        Text = "AI 도구를 활성화한 상태에서만 실행할 수 있습니다.",
+                        Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
+                        Icon = Guna.UI2.WinForms.MessageDialogIcon.Warning,
+                        Style = Guna.UI2.WinForms.MessageDialogStyle.Light
+                    }.Show();
+                    return true;
+                }
+
+                // 현재 활성 라벨 확인
+                if (string.IsNullOrWhiteSpace(_canvas.ActiveLabelName))
+                {
+                    new Guna.UI2.WinForms.Guna2MessageDialog
+                    {
+                        Parent = this,
+                        Caption = "Auto Label",
+                        Text = "활성 라벨이 없습니다. 오른쪽 라벨 목록에서 라벨을 선택해 주세요.",
+                        Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
+                        Icon = Guna.UI2.WinForms.MessageDialogIcon.Warning,
+                        Style = Guna.UI2.WinForms.MessageDialogStyle.Light
+                    }.Show();
+                    return true;
+                }
+
+                var baseDir = GetCurrentImageFolder();
+                var rootDir = GetDatasetRootFolderOfSelected();
+                if (string.IsNullOrEmpty(baseDir) || string.IsNullOrEmpty(rootDir))
+                {
+                    new Guna.UI2.WinForms.Guna2MessageDialog
+                    {
+                        Parent = this,
+                        Caption = "Auto Label",
+                        Text = "현재 선택된 항목에서 기준 폴더를 알 수 없습니다.",
+                        Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
+                        Icon = Guna.UI2.WinForms.MessageDialogIcon.Warning,
+                        Style = Guna.UI2.WinForms.MessageDialogStyle.Light
+                    }.Show();
+                    return true;
+                }
+
+                // 선택 이미지가 루트의 "직속"이 아니면 실행 불가
+                if (!string.Equals(baseDir, rootDir, StringComparison.OrdinalIgnoreCase))
+                {
+                    new Guna.UI2.WinForms.Guna2MessageDialog
+                    {
+                        Parent = this,
+                        Caption = "Auto Label",
+                        Text = "하위 폴더에서는 전체 자동 라벨링을 실행하지 않습니다.\n루트 폴더(최상위)에서 이미지를 선택하고 다시 시도해 주세요.",
+                        Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
+                        Icon = Guna.UI2.WinForms.MessageDialogIcon.Warning,
+                        Style = Guna.UI2.WinForms.MessageDialogStyle.Light
+                    }.Show();
+                    return true;
+                }
+
+                var aiChk = _canvas.GetTool(ToolMode.AI) as AITool;
+                if (aiChk == null || !aiChk.HasActiveRoi)
+                {
+                    new Guna.UI2.WinForms.Guna2MessageDialog
+                    {
+                        Parent = this,
+                        Caption = "Auto Label",
+                        Text = "현재 ROI가 없습니다. AI 도구(우클릭)로 ROI를 지정한 뒤 다시 시도해 주세요.",
+                        Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
+                        Icon = Guna.UI2.WinForms.MessageDialogIcon.Warning,
+                        Style = Guna.UI2.WinForms.MessageDialogStyle.Light
+                    }.Show();
+                    return true;
+                }
+
+                // 확인 다이얼로그
+                var confirm = new Guna.UI2.WinForms.Guna2MessageDialog
+                {
+                    Parent = this,
+                    Caption = "Auto Label",
+                    Text = "현재 데이터셋의 모든 이미지에 AI Labeling 을 적용하시겠습니까?",
+                    Buttons = Guna.UI2.WinForms.MessageDialogButtons.YesNo,
+                    Icon = Guna.UI2.WinForms.MessageDialogIcon.Question,
+                    Style = Guna.UI2.WinForms.MessageDialogStyle.Light
+                }.Show();
+
+                if (confirm == DialogResult.Yes)
+                {
+                    // 비동기 시작 (UI 블로킹 방지)
+                    StartAutoLabelAllImagesAsync();
+                }
                 return true;
             }
             if (keyData == (Keys.Control | Keys.Up) || keyData == (Keys.Control | Keys.Down))

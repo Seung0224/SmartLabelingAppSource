@@ -35,6 +35,7 @@ namespace SmartLabelingApp
         private const int BtnSize = 18;
         private const int BtnGap = 6;
         private int _previewVertexCount = 48; // 기본값 (각 폴리곤 리샘플 상한)
+        public bool HasActiveRoi => _roiMode && !_roiRectImg.IsEmpty;
 
         public void SetPreviewVertexCount(int k)
         {
@@ -582,6 +583,66 @@ namespace SmartLabelingApp
             return outPts;
         }
 
+        // [ADD] 현재 ROI 영역으로 GrabCut 실행 후 자동 커밋
+        public async Task<bool> AutoLabelCurrentRoiAndCommitAsync(ImageCanvas c)
+        {
+            if (c == null || c.Image == null) return false;
+            if (!_roiMode || _roiRectImg.IsEmpty) return false;
+
+            var boxImg = _roiRectImg;   // ← 현재 ROI 박스 사용 (전체 프레임 아님)
+
+            if (_aiBusy) return false;
+            _aiBusy = true;
+
+            List<List<PointF>> polys = null;
+            Cursor old = c.Cursor;
+            Bitmap bmpSafe = null;
+
+            try
+            {
+                c.Cursor = Cursors.WaitCursor;
+                bmpSafe = CloneForWorker(c.Image);
+
+                polys = await Task.Run(() =>
+                    _segmenter.Segment(bmpSafe, AISegmenterPrompt.FromBox(boxImg), _opts));
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                if (bmpSafe != null) bmpSafe.Dispose();
+                c.Cursor = old;
+                _aiBusy = false;
+            }
+
+            if (polys == null || polys.Count == 0) return false;
+
+            // 프리뷰 구성 → 자동 커밋
+            var outPolys = new List<List<PointF>>(polys.Count);
+            foreach (var p in polys)
+            {
+                float peri = Perimeter(p);
+                int desiredK = (int)Math.Max(8, Math.Min(128, Math.Round(peri / 6f)));
+                var q = (_previewVertexCount > 0) ? SimplifyToK(p, Math.Min(_previewVertexCount, desiredK)) : p;
+                outPolys.Add(q);
+            }
+            _previewPolys = outPolys;
+            _previewUnionBoundsImg = UnionBounds(outPolys);
+            _rectImg = RectangleF.Empty;
+
+            // 커밋(현재 활성 라벨 사용)
+            CommitPreview(c);
+
+            // 저장 전에 “편집/선택 잔상” 없애기
+            c.Selection?.Clear();
+            c.Invalidate();
+
+            return true;
+        }
+
+
         private static void DrawOkButton(Graphics g, Rectangle r)
         {
             using (var br = new SolidBrush(Color.FromArgb(235, 255, 255, 255)))
@@ -610,6 +671,68 @@ namespace SmartLabelingApp
                     g.DrawLine(p, r.Right - 4, r.Top + 4, r.Left + 4, r.Bottom - 4);
                 }
             }
+        }
+
+        public async Task<bool> AutoLabelFullImageAndCommitAsync(ImageCanvas c)
+        {
+            if (c == null || c.Image == null) return false;
+
+            var szf = c.Transform.ImageSize;
+            // 이미지의 최소 변의 2%를 여백으로, 범위는 [2px, 32px]
+            float pad = Math.Max(2f, Math.Min(32f, 0.02f * Math.Min(szf.Width, szf.Height)));
+            float x = pad, y = pad;
+            float w = Math.Max(8f, szf.Width - pad * 2f);
+            float h = Math.Max(8f, szf.Height - pad * 2f);
+            var full = new RectangleF(x, y, w, h);
+
+            // RunSegmentation는 async void라 대기 불가 -> 여기서 동일 로직을 await로 실행
+            if (_aiBusy) return false;
+            _aiBusy = true;
+
+            List<List<PointF>> polys = null;
+            Cursor old = c.Cursor;
+            Bitmap bmpSafe = null;
+
+            try
+            {
+                c.Cursor = Cursors.WaitCursor;
+                bmpSafe = CloneForWorker(c.Image);
+
+                polys = await Task.Run(() => _segmenter.Segment(bmpSafe, AISegmenterPrompt.FromBox(full), _opts));
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                if (bmpSafe != null) bmpSafe.Dispose();
+                c.Cursor = old;
+                _aiBusy = false;
+            }
+
+            if (polys == null || polys.Count == 0) return false;
+
+            // 프리뷰 구성 → 자동 커밋
+            var outPolys = new List<List<PointF>>(polys.Count);
+            foreach (var p in polys)
+            {
+                float peri = Perimeter(p);
+                int desiredK = (int)Math.Max(8, Math.Min(128, Math.Round(peri / 6f)));
+                var q = (_previewVertexCount > 0) ? SimplifyToK(p, Math.Min(_previewVertexCount, desiredK)) : p;
+                outPolys.Add(q);
+            }
+            _previewPolys = outPolys;
+            _previewUnionBoundsImg = UnionBounds(outPolys);
+            _rectImg = RectangleF.Empty;
+
+            // 커밋(현재 ActiveLabelName 사용)
+            CommitPreview(c);
+
+            // 커밋 후 선택/편집 잔상 없애기(저장 전에 깔끔)
+            if (c.Selection != null) c.Selection.Clear();
+            c.Invalidate();
+            return true;
         }
 
         // ========================= [AI ROI mode] Public API =========================
