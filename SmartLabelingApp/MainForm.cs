@@ -36,7 +36,7 @@ namespace SmartLabelingApp
         private const int RIGHT_ICON_PAD = 2; // 슬롯 안쪽 여백(padding)
 
         private const int RIGHT_BAR1_H = 446; // 상단 아이콘바 높이
-        private const int RIGHT_BAR2_H = 375; // 라벨링 ADD 바 높이
+        private const int RIGHT_BAR2_H = 368; // 라벨링 ADD 바 높이
         private const int RIGHT_BAR_GAP = 4;  // 바 사이 여백
 
         // 바(SAVE) + 레이아웃 보정 상수
@@ -124,10 +124,10 @@ namespace SmartLabelingApp
         private Guna2Panel _rightRail;
         private Guna2Panel _rightToolDock;   // 상단 바
         private Guna2Panel _rightToolDock2;  // 라벨링 ADD 바
-        private Guna2Panel _rightToolDock3;  // ★ NEW: SAVE 바
+        private Guna2Panel _rightToolDock3;
         private FlowLayoutPanel _rightTools; // 상단 툴 컨테이너
         private FlowLayoutPanel _rightTools2;// 라벨링 툴 컨테이너
-        private FlowLayoutPanel _rightTools3;// ★ NEW: SAVE 바 컨테이너
+        private FlowLayoutPanel _rightTools3;
 
         // 우측 툴 버튼들
         private readonly Guna2Button _btnOpen;
@@ -141,8 +141,10 @@ namespace SmartLabelingApp
         private readonly Guna2ImageButton _btnMask;
         private readonly Guna2ImageButton _btnAI;
         private readonly Guna2ImageButton _btnPolygon;
+        private readonly Guna2ImageButton _btnPrev;
+        private readonly Guna2ImageButton _btnNext;
+        private Panel _navRow;
         private Guna2Button _btnAdd;
-        private Guna2Button _btnSave;
         private Guna2Button _btnExport;
         private Guna2Button _btnTrain;
         private Guna2Button _btnInfer;
@@ -406,9 +408,9 @@ namespace SmartLabelingApp
             _rightToolDock3.Resize += (s, e) =>
             {
                 int w3 = Math.Max(LABEL_CHIP_MIN_W, _rightToolDock3.ClientSize.Width - _rightToolDock3.Padding.Horizontal);
-                if (_btnSave != null) { _btnSave.Width = w3; _btnSave.Margin = new Padding(0, 0, 0, ACTION3_GAP); }
                 if (_btnExport != null) { _btnExport.Width = w3; _btnExport.Margin = new Padding(0, 0, 0, ACTION3_GAP); }
                 if (_btnTrain != null) { _btnTrain.Width = w3; _btnTrain.Margin = new Padding(0, 0, 0, ACTION3_GAP); }
+                if (_navRow != null) { _navRow.Width = w3; LayoutNavRow(); }
                 if (_btnInfer != null) { _btnInfer.Width = w3; _btnInfer.Margin = new Padding(0, 0, 0, ACTION3_GAP); }
             };
 
@@ -459,23 +461,6 @@ namespace SmartLabelingApp
             _btnOpen.Click += OnOpenClick;
             _rightTools3.Controls.Add(_btnOpen);
 
-            _btnSave = new Guna2Button
-            {
-                Text = "2:SAVE",
-                BorderRadius = 12,
-                BorderThickness = 2,
-                BorderColor = Color.LightGray,
-                FillColor = Color.Transparent,
-                ForeColor = Color.Black,
-                Font = new Font("Segoe UI", 9, FontStyle.Bold),
-                AutoSize = false,
-                Size = new Size(innerW3, toolEdge),
-                Margin = new Padding(0, 0, 0, 8),
-                TabStop = false
-            };
-            _btnSave.Click += OnSaveClick;
-            _rightTools3.Controls.Add(_btnSave);
-
             _btnExport = new Guna2Button
             {
                 Text = "3:EXPRT",
@@ -510,6 +495,27 @@ namespace SmartLabelingApp
             _btnTrain.Click += OnTrainClick;
             _rightTools3.Controls.Add(_btnTrain);
 
+            _btnPrev = CreateToolIcon(Properties.Resources.Prev, "Prev", RIGHT_SLOT_H, RIGHT_ICON_PX);
+            _btnNext = CreateToolIcon(Properties.Resources.Next, "Next", RIGHT_SLOT_H, RIGHT_ICON_PX);
+
+            var prevSlot = WrapToolSlot(_btnPrev, innerW3 / 2, RIGHT_SLOT_H);
+            var nextSlot = WrapToolSlot(_btnNext, innerW3 / 2, RIGHT_SLOT_H);
+
+            _navRow = new FlowLayoutPanel
+            {
+                Height = RIGHT_SLOT_H,
+                Width = innerW3,
+                Margin = new Padding(0, 0, 0, 8),
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                BackColor = Color.Transparent
+            };
+
+            _navRow.Controls.Add(prevSlot);
+            _navRow.Controls.Add(nextSlot);
+            prevSlot.BorderColor = nextSlot.BorderColor = Color.LightGray;
+            _rightTools3.Controls.Add(_navRow);
+
             _btnInfer = new Guna2Button
             {
                 Text = "5:INFER",
@@ -529,7 +535,6 @@ namespace SmartLabelingApp
 
             // 파일/작업 플로우
             _tt.SetToolTip(_btnOpen, "이미지 파일 또는 폴더를 열어 작업을 시작합니다.");
-            _tt.SetToolTip(_btnSave, "현재 이미지의 라벨/마스크를 저장합니다 (YOLO Seg 형식).");
             _tt.SetToolTip(_btnAdd, "새 라벨(클래스)을 추가합니다.");
             _tt.SetToolTip(_btnExport, "라벨링 데이터를 YOLO Seg 데이터셋으로 내보냅니다.");
             _tt.SetToolTip(_btnTrain, "Export한 데이터셋으로 YOLO Seg 모델을 학습하여 .pt 모델과 .onnx 모델을 생성합니다.");
@@ -546,6 +551,9 @@ namespace SmartLabelingApp
             _btnEraser = CreateToolIcon(Properties.Resources.Eraser, "Eraser", RIGHT_SLOT_H, RIGHT_ICON_PX);
             _btnMask = CreateToolIcon(Properties.Resources.Masktoggle, "Mask", RIGHT_SLOT_H, RIGHT_ICON_PX);
             _btnAI = CreateToolIcon(Properties.Resources.AI, "AI", RIGHT_SLOT_H, RIGHT_ICON_PX);
+
+            _btnPrev.Click += OnPrevClick;
+            _btnNext.Click += OnNextClick;
 
             _btnPointer.Click += delegate { SetTool(ToolMode.Pointer, _btnPointer); };
             _btnCircle.Click += delegate { SetTool(ToolMode.Circle, _btnCircle); };
@@ -676,7 +684,6 @@ namespace SmartLabelingApp
             bindFocus(_btnMask);
             bindFocus(_btnAI);
             bindFocus(_btnAdd);
-            bindFocus(_btnSave);
             bindFocus(_btnExport);
             bindFocus(_btnTrain);
             bindFocus(_btnInfer);
@@ -936,6 +943,72 @@ namespace SmartLabelingApp
         #endregion
 
         #region 5) UI Helpers (유틸/파일/레이아웃 보조)
+        private void OnPrevClick(object sender, EventArgs e)
+        {
+            try { NavigateImage(-1); } catch { /* 무시 */ }
+            _canvas?.Focus();
+        }
+        private void OnNextClick(object sender, EventArgs e)
+        {
+            try { NavigateImage(+1); } catch { /* 무시 */ }
+            _canvas?.Focus();
+        }
+
+        private void NavigateImage(int delta)
+        {
+            // 현재 선택 이미지와 동일 폴더의 "직속 이미지"만 대상으로 순환
+            string cur = GetSelectedImagePathFromTree();
+            string folder = GetCurrentImageFolder();
+            if (string.IsNullOrEmpty(folder)) return;
+
+            var list = EnumerateTopImagesInFolder(folder)
+                       .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+                       .ToList();
+            if (list.Count == 0) return;
+
+            int idx = string.IsNullOrEmpty(cur) ? -1 : list.FindIndex(p => string.Equals(p, cur, StringComparison.OrdinalIgnoreCase));
+            if (idx < 0) idx = 0;
+
+            int next = (idx + delta) % list.Count;
+            if (next < 0) next += list.Count;
+
+            string path = list[next];
+            if (System.IO.File.Exists(path))
+            {
+                // 이미지 로드 + 트리 선택 갱신
+                LoadImageAtPath(path);
+                SelectTreeNodeByPath(path);
+            }
+        }
+
+        // 트리에서 해당 경로를 가진 노드를 찾아 선택(이미 구현돼있다면 생략)
+        private void SelectTreeNodeByPath(string path)
+        {
+            if (_fileTree == null || _fileTree.Nodes.Count == 0 || string.IsNullOrEmpty(path)) return;
+
+            TreeNode found = null;
+            var stack = new Stack<TreeNode>();
+            foreach (TreeNode n in _fileTree.Nodes) stack.Push(n);
+            while (stack.Count > 0)
+            {
+                var n = stack.Pop();
+                string tagPath = n.Tag as string;
+                if (string.IsNullOrEmpty(tagPath)) tagPath = n.ToolTipText;
+                if (string.IsNullOrEmpty(tagPath)) tagPath = n.Text;
+
+                if (string.Equals(tagPath, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    found = n; break;
+                }
+                foreach (TreeNode ch in n.Nodes) stack.Push(ch);
+            }
+            if (found != null)
+            {
+                _fileTree.SelectedNode = found;
+                found.EnsureVisible();
+            }
+        }
+
 
         private static string GetLastExportZipPathFile()
         {
@@ -943,6 +1016,18 @@ namespace SmartLabelingApp
                                     "SmartLabelingApp");
             Directory.CreateDirectory(root);
             return Path.Combine(root, "last_export_zip.txt");
+        }
+        void LayoutNavRow()
+        {
+            int w = Math.Max(LABEL_CHIP_MIN_W, _rightToolDock3.ClientSize.Width - _rightToolDock3.Padding.Horizontal);
+            _navRow.Width = w;
+            int half = (w - 6) / 2;
+
+            _btnPrev.Size = new Size(half, RIGHT_SLOT_H);
+            _btnNext.Size = new Size(half, RIGHT_SLOT_H);
+
+            _btnPrev.Location = new Point(0, 0);
+            _btnNext.Location = new Point(half + 6, 0); // 가운데 6px 간격
         }
 
         private void LoadLastExportZipPath()
@@ -1457,7 +1542,7 @@ namespace SmartLabelingApp
             if (_canvas != null && !_canvas.Focused) _canvas.Focus();
         }
 
-        private void OnSaveClick(object sender, EventArgs e)
+        private void OnSaveClick()
         {
             try
             {
@@ -1705,7 +1790,7 @@ namespace SmartLabelingApp
                             }
 
                             // 저장 (AI 모드 유지, 선택/편집 잔상 없음)
-                            OnSaveClick(_btnSave, EventArgs.Empty);
+                            OnSaveClick();
 
                             labeled++;
                         }
@@ -2013,7 +2098,7 @@ namespace SmartLabelingApp
         {
             if (keyData == (Keys.Control | Keys.S))
             {
-                OnSaveClick(_btnSave, EventArgs.Empty); // 또는 내부 저장 호출
+                OnSaveClick();
                 return true;
             }
             if (keyData == (Keys.Control | Keys.E))
