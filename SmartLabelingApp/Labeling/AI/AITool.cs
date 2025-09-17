@@ -380,11 +380,22 @@ namespace SmartLabelingApp
             _rectImg = RectangleF.Empty;
             c.Invalidate();
 
+            if (_autoCommitNextPreview && _roiMode && !_roiRectImg.IsEmpty && c.Image != null)
+            {
+                var sz = c.Transform.ImageSize;            // SizeF
+                _roiNormPersist = NormalizeRect(_roiRectImg, sz); // 내부 보관
+            }
+
             // ★ Ctrl+D 등 autoCommit 요청 시 즉시 커밋
             if (_autoCommitNextPreview)
             {
                 _autoCommitNextPreview = false;
                 CommitPreview(c);
+
+                // [ADD] 커밋 후에는 "현재 이미지에서만" ROI 오버레이를 숨김 (모드는 유지)
+                _roiRectImg = RectangleF.Empty;
+                _roiHandle = RoiHandle.None;
+                c.Invalidate();
             }
         }
 
@@ -555,12 +566,14 @@ namespace SmartLabelingApp
             if (c?.Image != null)
             {
                 var sz = c.Transform.ImageSize;
-                _roiRectImg = initialNorm.HasValue ? DenormalizeRect(initialNorm.Value, sz)
-                                                   : (_roiRectImg.IsEmpty ? DefaultCenterRoi(sz) : _roiRectImg);
+                var seed = initialNorm ?? _roiNormPersist;   // [CHG] persist 우선 사용
+                _roiRectImg = seed.HasValue ? DenormalizeRect(seed.Value, sz)
+                                            : (_roiRectImg.IsEmpty ? DefaultCenterRoi(sz) : _roiRectImg);
                 _roiRectImg = ClampToImage(_roiRectImg, sz);
                 c.Invalidate();
             }
         }
+
 
         public void DisableRoiMode(ImageCanvas c)
         {
@@ -571,8 +584,9 @@ namespace SmartLabelingApp
 
         public RectangleF? GetRoiNormalized(Size imgSize)
         {
-            if (!_roiMode || _roiRectImg.IsEmpty) return null;
-            return NormalizeRect(_roiRectImg, imgSize);
+            if (!_roiMode) return null;
+            if (!_roiRectImg.IsEmpty) return NormalizeRect(_roiRectImg, imgSize);
+            return _roiNormPersist;  // [CHG] 화면에 ROI가 사라졌어도 직전 비율 반환
         }
 
         // 새 이미지 로드시 직전 ROI를 동일 비율로 재생성
@@ -580,7 +594,8 @@ namespace SmartLabelingApp
         {
             if (!_roiMode || c?.Image == null) return;
             var sz = c.Transform.ImageSize;
-            if (lastNorm.HasValue) _roiRectImg = DenormalizeRect(lastNorm.Value, sz);
+            var seed = lastNorm ?? _roiNormPersist;   // [CHG] persist 우선 사용
+            if (seed.HasValue) _roiRectImg = DenormalizeRect(seed.Value, sz);
             if (_roiRectImg.IsEmpty) _roiRectImg = DefaultCenterRoi(sz);
             _roiRectImg = ClampToImage(_roiRectImg, sz);
             c.Invalidate();
@@ -598,6 +613,7 @@ namespace SmartLabelingApp
 
         // Ctrl+D auto-commit flag
         private bool _autoCommitNextPreview = false;
+        private RectangleF? _roiNormPersist = null;
 
         private static RectangleF NormalizeRect(RectangleF r, SizeF img) =>
             img.Width <= 0 || img.Height <= 0 ? RectangleF.Empty :

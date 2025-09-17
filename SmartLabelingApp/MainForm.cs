@@ -170,6 +170,7 @@ namespace SmartLabelingApp
         private AiSubMode _aiSubMode = AiSubMode.Off;
         // 직전 이미지에서의 ROI 정규화 좌표(0~1, x,y,w,h). AI-ROI 모드 유지 시 이미지 전환에 복원.
         private RectangleF? _lastRoiNorm = null;
+        private Image _aiRainbowBg = null;
 
         private ToolTip _tt = new ToolTip
         {
@@ -782,23 +783,10 @@ namespace SmartLabelingApp
                 HighlightTool(_btnMask, mode == ToolMode.Mask, iconPixel);
                 HighlightTool(_btnAI, mode == ToolMode.AI, iconPixel);
 
-                // AI 모드/ROI 서브모드 하이라이트 & 해제 처리
-                if (mode != ToolMode.AI)
-                {
-                    _aiSubMode = AiSubMode.Off;
-                    var aiTool = _canvas.GetTool(ToolMode.AI) as AITool;
-                    aiTool?.DisableRoiMode(_canvas);
-                }
-                else if (_aiSubMode == AiSubMode.Roi)
-                {
-                    var slot = _btnAI.Parent as Guna2Panel;
-                    if (slot != null)
-                    {
-                        slot.BorderColor = Color.Navy;
-                        slot.FillColor = Color.FromArgb(240, 242, 255);
-                    }
-                }
-
+                if (mode == ToolMode.AI && _aiSubMode == AiSubMode.Roi)
+                    ApplyAiButtonRainbowTint(true);
+                else
+                    ApplyAiButtonRainbowTint(false);
 
                 if (mode == ToolMode.Brush || mode == ToolMode.Eraser)
                 {
@@ -1135,6 +1123,80 @@ namespace SmartLabelingApp
                 slot.FillColor = active ? Color.FromArgb(245, 245, 245) : Color.Transparent;
             }
         }
+
+        // [ADD] 무지개 비트맵 생성 (panel.ClientSize에 맞춰 가로 그라디언트)
+        private static Bitmap MakeRainbowBitmap(Size size)
+        {
+            if (size.Width < 2 || size.Height < 2)
+                size = new Size(Math.Max(2, size.Width), Math.Max(2, size.Height));
+
+            var bmp = new Bitmap(size.Width, size.Height);
+            using (var g = Graphics.FromImage(bmp))
+            using (var br = new System.Drawing.Drawing2D.LinearGradientBrush(
+                new Rectangle(Point.Empty, size),
+                Color.Red, Color.Violet, 0f)) // 왼→오 0도
+            {
+                var cb = new System.Drawing.Drawing2D.ColorBlend
+                {
+                    Positions = new[] { 0f, 0.2f, 0.4f, 0.6f, 0.8f, 1f },
+                    Colors = new[]
+                    {
+                Color.FromArgb(255, 255,   0,   0), // Red
+                Color.FromArgb(255, 255, 165,   0), // Orange
+                Color.FromArgb(255, 255, 255,   0), // Yellow
+                Color.FromArgb(255,   0, 128,   0), // Green
+                Color.FromArgb(255,   0,   0, 255), // Blue
+                Color.FromArgb(255, 128,   0, 128), // Purple
+            }
+                };
+                br.InterpolationColors = cb;
+                g.FillRectangle(br, 0, 0, size.Width, size.Height);
+            }
+            return bmp;
+        }
+
+        // [ADD] ROI 모드일 때 무지개 배경 on/off (HighlightTool 결과 위에 덮어쓰기)
+        private void ApplyAiButtonRainbowTint(bool enable)
+        {
+            var slot = _btnAI?.Parent as Guna.UI2.WinForms.Guna2Panel;
+            if (slot == null) return;
+
+            if (enable)
+            {
+                // 1) 무지개 비트맵 재생성
+                if (_aiRainbowBg != null) { _aiRainbowBg.Dispose(); _aiRainbowBg = null; }
+                _aiRainbowBg = MakeRainbowBitmap(slot.ClientSize);
+
+                // 2) 슬롯을 완전 투명 모드로
+                slot.UseTransparentBackground = true;          // 중요: 배경 투명 허용
+                slot.FillColor = Color.Transparent;            // 내부 채움 제거
+                slot.BorderColor = Color.Transparent;          // 테두리 색 제거
+                slot.BorderThickness = 0;                      // 테두리 두께 제거
+                slot.CustomBorderThickness = Padding.Empty;    // 커스텀 테두리 제거
+
+                // 3) 무지개 배경 적용
+                slot.BackgroundImage = _aiRainbowBg;
+                slot.BackgroundImageLayout = ImageLayout.Stretch;
+
+                // 4) 버튼 자신도 투명(배경색으로 무지개가 가려지지 않도록)
+                _btnAI.BackColor = Color.Transparent;
+            }
+            else
+            {
+                // 무지개 해제
+                slot.BackgroundImage = null;
+                slot.UseTransparentBackground = false;   // 기본(불투명) 복귀
+                                                         // Fill/Border/Thickness는 HighlightTool이 다음 호출에서 다시 세팅
+
+                if (_aiRainbowBg != null) { _aiRainbowBg.Dispose(); _aiRainbowBg = null; }
+
+                // 버튼 배경도 기본으로(필요시)
+                _btnAI.BackColor = Color.Transparent;
+            }
+        }
+
+
+
         // AI 서브모드 진입 함수들
         private void EnterAiFreeformMode()
         {
@@ -1144,6 +1206,7 @@ namespace SmartLabelingApp
 
             // HighlightTool이 라임색을 입혀줌
             HighlightTool(_btnAI, true, RIGHT_ICON_PX);
+            ApplyAiButtonRainbowTint(false);
 
             // ROI 모드는 반드시 끈다
             var ai = _canvas.GetTool(ToolMode.AI) as AITool;
@@ -1161,6 +1224,7 @@ namespace SmartLabelingApp
 
             // 기본 크기 변화 효과는 유지(아이콘 커짐)
             HighlightTool(_btnAI, true, RIGHT_ICON_PX);
+            ApplyAiButtonRainbowTint(true);
 
             // 슬롯 색만 남색으로 오버라이드
             var slot = _btnAI.Parent as Guna2Panel;
@@ -1395,7 +1459,23 @@ namespace SmartLabelingApp
                 }
 
                 SaveDatasetYoloWithImages();
-                if (_canvas != null) _canvas.ClearSelectionAndResetEditing();
+                bool keepAiRoi = (_aiSubMode == AiSubMode.Roi) && _canvas != null && _canvas.Mode == ToolMode.AI;
+
+                // AI-ROI 활성 상태에서는 모드를 유지(포인터로 바꾸지 않음)
+                if (keepAiRoi)
+                {
+                    // 선택만 잠깐 정리하고(필요시) 모드는 그대로 둡니다.
+                    if (_canvas.Selection != null) _canvas.Selection.Clear();
+                    _canvas.ClearSelectionButKeepMode();
+                }
+                else
+                {
+                    // 평소처럼 저장 후 기본 상태로 복귀
+                    _canvas.ClearSelectionAndResetEditing();
+                }
+
+                // 저장 후 단축키 연속 입력을 위해 포커스 환원 (권장)
+                _canvas?.Focus();
             }
             catch (Exception ex)
             {
@@ -3615,5 +3695,10 @@ namespace SmartLabelingApp
         }
 
         #endregion
+
+        private void MainForm_FormClosed(object sender, FormClosedEventArgs e)
+        {
+            if (_aiRainbowBg != null) { _aiRainbowBg.Dispose(); _aiRainbowBg = null; }
+        }
     }
 }

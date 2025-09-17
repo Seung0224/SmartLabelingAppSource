@@ -173,6 +173,34 @@ namespace SmartLabelingApp
 
             Invalidate();
         }
+        public void ClearSelectionButKeepMode()
+        {
+            // 회전 취소
+            _rotating = false;
+            _rotBase = null;
+            _rotCurrAngleRad = 0f;
+
+            // 멀티 편집 취소
+            _msActive = false;
+            _msHandle = HandleType.None;
+            _msStartRects = null;
+
+            // 러버밴드/캡처/커서 초기화
+            _rbActive = false;
+            _rbRectImg = RectangleF.Empty;
+            Capture = false;
+            Cursor = Cursors.Default;
+
+            // 팬 상태 해제
+            _isPanning = false;
+            PanMode = false;
+
+            // 선택만 해제 (툴 모드는 절대 건드리지 않음)
+            if (Selection != null) Selection.Clear();
+
+            Invalidate();
+        }
+
 
         public bool HasAnyShape => Shapes.Count > 0;
 
