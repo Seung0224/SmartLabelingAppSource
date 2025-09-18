@@ -8,11 +8,11 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
-using System.Globalization;  // 숫자 포맷 (YOLO용 소수점)
+using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
-using System.Text;           // notes.json 생성용 StringBuilder
+using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -21,21 +21,20 @@ namespace SmartLabelingApp
     public partial class MainForm : Form
     {
         #region 0) DeepLearning Fields
-        private InferenceSession _onnxSession = null;   // Open에서 만든 세션을 보관
+        private InferenceSession _onnxSession = null;
         #endregion
-
         #region 1) Constants & Static Data (상수/정적 데이터)
-        // 모델 자동 로드 기본 경로
+
         private const string DEFAULT_MODEL_PATH = @"D:\SLA_Model\SEG.onnx";
         private string _currentModelName = "UNKNOWN";
         private System.Threading.CancellationTokenSource _autoInferCts;
 
-        // ---- Left Model Header Panel
-        private const int MODEL_HEADER_H = 39;   // 헤더 패널 높이
-        private const int MODEL_HEADER_Y = -43; // _leftRail 내부 기준 Y (원하는 값으로 조절)
-        private const int MODEL_HEADER_GAP = 4;  // 모델 패널과 트리뷰 컨테이너(_leftDock) 사이 간격
 
-        // ---- Hotkey Panel (좌상단 안내)
+        private const int MODEL_HEADER_H = 39;
+        private const int MODEL_HEADER_Y = -43;
+        private const int MODEL_HEADER_GAP = 4;
+
+
         private const int HOTKEY_PANEL_X = -4;
         private const int HOTKEY_PANEL_Y = -46;
         private const int HOTKEY_PANEL_W = 1606;
@@ -44,61 +43,58 @@ namespace SmartLabelingApp
         private static readonly Color HOTKEY_PANEL_FILL = Color.White;
         private static readonly Color HOTKEY_PANEL_BORDER = Color.LightGray;
 
-        // ---- 상단바(TopBar)
+
         private const int TOPBAR_H = 32;
         private const int PAD_V = 2;
         private const int PAD_H = 8;
         private const int GAP = 4;
 
-        // ---- 우측 도크(Right Dock)
+
         private const int RIGHT_DOCK_W = 90;
         private const int RIGHT_DOCK_T = 1;
 
-        private const int RIGHT_ICON_PX = 22; // 아이콘 이미지 크기(px)
-        private const int RIGHT_SLOT_H = 35;  // 슬롯(버튼 높이)
-        private const int RIGHT_ICON_GAP = 8; // 아이콘 간 간격(아래 margin)
-        private const int RIGHT_ICON_PAD = 2; // 슬롯 안쪽 여백(padding)
+        private const int RIGHT_ICON_PX = 22;
+        private const int RIGHT_SLOT_H = 35;
+        private const int RIGHT_ICON_GAP = 8;
+        private const int RIGHT_ICON_PAD = 2;
 
-        private const int RIGHT_BAR1_H = 446; // 상단 아이콘바 높이
-        private const int RIGHT_BAR2_H = 255; // 라벨링 ADD 바 높이
-        private const int RIGHT_BAR_GAP = 4;  // 바 사이 여백
-
-        // 바(SAVE) + 레이아웃 보정 상수
-        private const int RIGHT_BAR3_H = 80;           // 기본값 (스냅 꺼두면 이 값 사용)
-        private const bool RIGHT_BAR3_SNAP_TO_VIEWER = true; // 뷰어 하단에 자동 정렬
-        private const int RIGHT_BAR3_TAIL = 5;         // 끝단 미세 보정(px): +면 살짝 더 아래
-        private const int RIGHT_BAR_MIN_H = 40;        // 바2/바3 최소 높이
+        private const int RIGHT_BAR1_H = 446;
+        private const int RIGHT_BAR2_H = 255;
+        private const int RIGHT_BAR_GAP = 4;
 
 
-        // === Right Bar3 action area metrics ===
-        private const int ACTION3_TOP = 5;   // 바3 내부의 시작 Y (위 여백)
-        private const int ACTION3_GAP = 8;   // SAVE ↔ EXPORT 간격
+        private const int RIGHT_BAR3_H = 80;
+        private const bool RIGHT_BAR3_SNAP_TO_VIEWER = true;
+        private const int RIGHT_BAR3_TAIL = 5;
+        private const int RIGHT_BAR_MIN_H = 40;
 
 
-        // ---- 프레임(Frame)
+        private const int ACTION3_TOP = 5;
+        private const int ACTION3_GAP = 8;
+
+
         private const int FRAME_X = 205;
         private const int FRAME_X_OFFSET = 85;
         private const int FRAME_Y = 46;
-        private const int FRAME_Y_OFFSET = 500;
+        private const int FRAME_Y_OFFSET = 200;
         private const int FRAME_W = 800;
         private const int FRAME_H = 547;
         private const int FRAME_BORDER = 2;
 
 
-        // 최소 보장 폭과 여백(테두리/패딩/사이드컨트롤 합)을 필요에 맞게 조정하세요.
         private const int VIEWER_MIN_W = 1024;
-        private const int VIEWER_HORIZONTAL_MARGIN = 320; // 양쪽 여백 총합(대략치)
+        private const int VIEWER_HORIZONTAL_MARGIN = 320;
 
-        // 모니터(현재 폼이 있는 화면)의 작업영역 너비를 기준으로 동적으로 계산
+
         private int VIEWER_MAX_W =>
             Math.Max(VIEWER_MIN_W, Screen.FromControl(this).WorkingArea.Width - VIEWER_HORIZONTAL_MARGIN);
 
-        // ----- Label Chip Layout Controls -----
-        private const int LABEL_CHIP_MIN_W = 74;     // 칩/ADD 최소 폭
 
-        // YoLo 형식 관련
+        private const int LABEL_CHIP_MIN_W = 74;
+
+
         private bool _yoloLoadedForCurrentImage = false;
-        private string _lastYoloExportRoot;  // 마지막으로 Save한 YOLO 데이터셋 루트
+        private string _lastYoloExportRoot;
         private readonly Dictionary<string, Color> _classColorMap = new Dictionary<string, Color>(StringComparer.OrdinalIgnoreCase);
 
         private string _lastExportZipPath;
@@ -115,25 +111,24 @@ namespace SmartLabelingApp
             }
         }
 
-        // ---- 이미지 확장자(정적)
+
         private static readonly HashSet<string> _imgExts =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff" };
 
         #endregion
-
         #region 2) UI Components (컨트롤/뷰 구성요소)
 
-        // Hotkey 안내 패널
+
         private Guna.UI2.WinForms.Guna2Panel _hotkeyPanel;
         private System.Windows.Forms.Label _hotkeyLabel;
 
-        // 창 효과
+
         private readonly Guna2BorderlessForm _borderless;
         private readonly Guna2Elipse _elipse;
         private readonly Guna2ShadowForm _shadow;
 
-        // 상단바
+
         private readonly Guna2GradientPanel _topBar;
         private Guna2ControlBox _btnMin;
         private Guna2ControlBox _btnMax;
@@ -141,27 +136,27 @@ namespace SmartLabelingApp
         private Guna2DragControl _dragControl;
         private Guna2DragControl _dragTitle;
 
-        // 중앙 호스트 + 캔버스 레이어/캔버스
+
         private Guna2Panel _canvasHost;
         private Panel _canvasLayer;
         private readonly ImageCanvas _canvas;
-        // --- Add Vertex용 컨텍스트 상태 ---
-        private ToolStripMenuItem _miAddVertex;    // 동적 추가되는 메뉴(폴리곤일 때만 표시)
-        private System.Drawing.PointF _lastCtxImgPointImg; // 마지막 우클릭 이미지 좌표
+
+        private ToolStripMenuItem _miAddVertex;
+        private System.Drawing.PointF _lastCtxImgPointImg;
 
         private Guna2Panel _modelHeaderPanel;
         private Label _modelHeaderLabel;
 
-        // 우측 도크/툴바
+
         private Guna2Panel _rightRail;
-        private Guna2Panel _rightToolDock;   // 상단 바
-        private Guna2Panel _rightToolDock2;  // 라벨링 ADD 바
+        private Guna2Panel _rightToolDock;
+        private Guna2Panel _rightToolDock2;
         private Guna2Panel _rightToolDock3;
-        private FlowLayoutPanel _rightTools; // 상단 툴 컨테이너
-        private FlowLayoutPanel _rightTools2;// 라벨링 툴 컨테이너
+        private FlowLayoutPanel _rightTools;
+        private FlowLayoutPanel _rightTools2;
         private FlowLayoutPanel _rightTools3;
 
-        // 우측 툴 버튼들
+
         private readonly Guna2ImageButton _btnPointer;
         private readonly Guna2ImageButton _btnTriangle;
         private readonly Guna2ImageButton _btnBox;
@@ -186,51 +181,49 @@ namespace SmartLabelingApp
         private readonly Guna2Button _btnTrain;
         private readonly Guna2Button _btnInfer;
 
-        // 좌측 탐색(폴더/파일)
+
         private Guna2Panel _leftRail;
         private Guna2Panel _leftDock;
         private TreeView _fileTree;
         #endregion
-
         #region 3) State & Model (상태/모델)
-        private string _currentImagePath; // 현재 캔버스에 로드된 이미지의 전체 경로
-        private BrushSizeWindow _brushWin;      // 브러시 크기 팝업
-        private Control _brushAnchorBtn;        // 마지막 앵커 버튼(브러시/지우개)
-        private int _brushDiameterPx = 18;      // 현재 브러시 지름(px)
-        private string _currentFolder;          // 현재 탐색 폴더 경로
+        private string _currentImagePath;
+        private BrushSizeWindow _brushWin;
+        private Control _brushAnchorBtn;
+        private int _brushDiameterPx = 18;
+        private string _currentFolder;
 
-        // 라벨 추가를 위한 상태
-        private LabelCreateWindow _labelWin;    // 라벨 생성 창
-        private Control _labelAnchorBtn;        // 라벨 창 앵커(ADD 버튼 슬롯)
-        private int _labelSeq = 1;              // 빈 이름일 때 자동 이름 부여용
 
-        // === AI Sub-Mode & ROI persistence ===
+        private LabelCreateWindow _labelWin;
+        private Control _labelAnchorBtn;
+        private int _labelSeq = 1;
+
+
         private enum AiSubMode { Off, Free, Roi }
         private AiSubMode _aiSubMode = AiSubMode.Off;
-        // 직전 이미지에서의 ROI 정규화 좌표(0~1, x,y,w,h). AI-ROI 모드 유지 시 이미지 전환에 복원.
+
         private RectangleF? _lastRoiNorm = null;
         private Image _aiRainbowBg = null;
 
         private ToolTip _tt = new ToolTip
         {
-            AutoPopDelay = 8000,   // 보여지는 시간(ms)
-            InitialDelay = 400,    // 최초 지연(ms)
-            ReshowDelay = 100,     // 다시 보여줄 때 지연
-            ShowAlways = true,     // 비활성화여도 표시
-            IsBalloon = true       // 말풍선 스타일(원하지 않으면 false)
+            AutoPopDelay = 8000,
+            InitialDelay = 400,
+            ReshowDelay = 100,
+            ShowAlways = true,
+            IsBalloon = true
         };
         #endregion
-
         #region 4) Initialization & Layout (Constructor)
         public MainForm()
         {
-            // ---- 기본 폼 설정
+
             Text = "SmartLabelingApp";
             StartPosition = FormStartPosition.Manual;
-            this.WindowState = FormWindowState.Maximized; // 초기 상태 고정
+            this.WindowState = FormWindowState.Maximized;
             this.Load += (_, __) =>
             {
-                // 여기서 다시 한 번 보정하면 Shown 전에 적용되어 깜빡임이 줄어듭니다.
+
                 this.WindowState = FormWindowState.Maximized;
             };
 
@@ -246,10 +239,10 @@ namespace SmartLabelingApp
                     e.KeyCode == Keys.Delete || e.KeyCode == Keys.Escape;
 
                 if (isShortcut && _canvas != null && !_canvas.Focused)
-                    _canvas.Focus(); // 실제 처리는 ImageCanvas.OnKeyDown에서
+                    _canvas.Focus();
             };
 
-            // ---- 창 효과
+
             _elipse = new Guna2Elipse { BorderRadius = 2, TargetControl = this };
             _borderless = new Guna2BorderlessForm
             {
@@ -260,7 +253,7 @@ namespace SmartLabelingApp
             };
             _shadow = new Guna2ShadowForm { ShadowColor = Color.Black };
 
-            // ---- 중앙 호스트(화이트 카드)
+
             _canvasHost = new Guna2Panel
             {
                 Dock = DockStyle.Fill,
@@ -273,7 +266,7 @@ namespace SmartLabelingApp
             _canvasHost.ShadowDecoration.Parent = _canvasHost;
             Controls.Add(_canvasHost);
 
-            // ---- 상단바
+
             _topBar = new Guna2GradientPanel
             {
                 Dock = DockStyle.Top,
@@ -359,11 +352,11 @@ namespace SmartLabelingApp
                 UseTransparentDrag = true
             };
 
-            // ---- 우측 도크
+
             _rightRail = new Guna2Panel { Dock = DockStyle.Right, Width = RIGHT_DOCK_W };
             _canvasHost.Controls.Add(_rightRail);
 
-            // 상단 바
+
             _rightToolDock = new Guna2Panel
             {
                 Dock = DockStyle.Top,
@@ -388,7 +381,7 @@ namespace SmartLabelingApp
             _rightToolDock.Controls.Add(_rightTools);
             _rightRail.Controls.Add(_rightToolDock);
 
-            // 라벨링 ADD 바 (수동 배치)
+
             _rightToolDock2 = new Guna2Panel
             {
                 Dock = DockStyle.None,
@@ -452,7 +445,7 @@ namespace SmartLabelingApp
                 if (_btnInfer != null) { _btnInfer.Width = w3; _btnInfer.Margin = new Padding(0, 0, 0, ACTION3_GAP); }
             };
 
-            // 하단 바 - ADD 버튼
+
             int innerW2 = RIGHT_DOCK_W - _rightToolDock2.Padding.Horizontal;
             _btnAdd = new Guna2Button
             {
@@ -593,19 +586,17 @@ namespace SmartLabelingApp
             _navRow.Controls.Add(nextSlot);
             prevSlot.BorderColor = nextSlot.BorderColor = Color.LightGray;
 
-
             _rightTools3.Controls.Add(_navRow);
             _rightTools3.Controls.Add(_slotToggle);
 
 
-            // 파일/작업 플로우
             _tt.SetToolTip(_btnOpen, "이미지 파일 또는 폴더를 열어 작업을 시작합니다.");
             _tt.SetToolTip(_btnAdd, "새 라벨(클래스)을 추가합니다.");
             _tt.SetToolTip(_btnExport, "라벨링 데이터를 YOLO Seg 데이터셋으로 내보냅니다.");
             _tt.SetToolTip(_btnTrain, "Export한 데이터셋으로 YOLO Seg 모델을 학습하여 .pt 모델과 .onnx 모델을 생성합니다.");
             _tt.SetToolTip(_btnInfer, "선택한 ONNX 모델로 추론하고 오버레이로 확인합니다.");
 
-            // 툴 아이콘 생성
+
             _btnPointer = CreateToolIcon(Properties.Resources.Arrow, "Pointer", RIGHT_SLOT_H, RIGHT_ICON_PX);
             _btnCircle = CreateToolIcon(Properties.Resources.Circle, "Circle", RIGHT_SLOT_H, RIGHT_ICON_PX);
             _btnTriangle = CreateToolIcon(Properties.Resources.Triangle, "Triangle", RIGHT_SLOT_H, RIGHT_ICON_PX);
@@ -672,16 +663,16 @@ namespace SmartLabelingApp
                 if (_brushWin != null && _brushWin.Visible) _brushWin.Hide();
             };
 
-            // [ADD] AI 버튼 좌/우 클릭 분기 (좌: Freeform, 우: ROI 고정모드)
+
             _btnAI.MouseUp += (s, e) =>
             {
                 if (e.Button == MouseButtons.Left)
                 {
-                    EnterAiFreeformMode();   // 라임색 하이라이트 (기본 HighlightTool 사용)
+                    EnterAiFreeformMode();
                 }
                 else if (e.Button == MouseButtons.Right)
                 {
-                    EnterAiRoiMode();        // 남색 하이라이트
+                    EnterAiRoiMode();
                 }
             };
 
@@ -703,7 +694,7 @@ namespace SmartLabelingApp
              "• Ctrl+E: 현재 폴더 ‘직속’ 이미지 일괄 자동 라벨링(기존 라벨 있으면 스킵)\n" +
              "※ 라벨은 ‘활성 라벨’로 적용, ROI는 다음 이미지에도 같은 비율로 복원");
 
-            // 슬롯 래핑 후 상단 바에 배치
+
             int innerWSlot = RIGHT_DOCK_W - _rightToolDock.Padding.Horizontal;
             var slotPointer = WrapToolSlot(_btnPointer, innerWSlot, RIGHT_SLOT_H);
             var slotCircle = WrapToolSlot(_btnCircle, innerWSlot, RIGHT_SLOT_H);
@@ -727,7 +718,7 @@ namespace SmartLabelingApp
             _rightTools.Controls.Add(slotMask);
             _rightTools.Controls.Add(slotAI);
 
-            // 포커스 유지(단축키 안정)
+
             Action<Control> bindFocus = c =>
             {
                 c.TabStop = false;
@@ -750,13 +741,13 @@ namespace SmartLabelingApp
             bindFocus(_btnTrain);
             bindFocus(_btnInfer);
 
-            // ---- 좌측 탐색(폴더/파일 트리)
+
             _leftRail = new Guna2Panel { Dock = DockStyle.Left, Width = 200, BackColor = Color.Transparent };
             _canvasHost.Controls.Add(_leftRail);
 
             _leftDock = new Guna2Panel
             {
-                // Dock = DockStyle.Fill,   // ← 제거
+
                 Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom,
                 Padding = new Padding(6, 8, 6, 8),
                 FillColor = Color.Transparent,
@@ -788,7 +779,7 @@ namespace SmartLabelingApp
 
                 if (System.IO.File.Exists(path) && IsImageFile(path))
                 {
-                    // ROI 모드면 현재 이미지의 ROI 정규화 좌표 저장
+
                     if (_aiSubMode == AiSubMode.Roi && _canvas != null && _canvas.Image != null)
                     {
                         var ai = _canvas.GetTool(ToolMode.AI) as AITool;
@@ -796,7 +787,7 @@ namespace SmartLabelingApp
                     }
                     LoadImageAtPath(path);
 
-                    // ROI 모드면 동일 비율/위치로 ROI 복원
+
                     if (_aiSubMode == AiSubMode.Roi)
                     {
                         var ai2 = _canvas.GetTool(ToolMode.AI) as AITool;
@@ -820,7 +811,7 @@ namespace SmartLabelingApp
             _leftRail.Controls.Add(_leftDock);
             _leftRail.BringToFront();
 
-            // ---- 프레임 + 캔버스
+
             _canvasLayer = new Panel { Dock = DockStyle.Fill, BackColor = Color.White };
             _canvasLayer.Paint += (s, e) => DrawPlaceholder(e.Graphics);
             _canvasHost.Controls.Add(_canvasLayer);
@@ -834,8 +825,8 @@ namespace SmartLabelingApp
             _canvas.SetBrushDiameter(_brushDiameterPx);
             _canvas.ToolEditBegan += () => HideBrushWindow();
 
-            // ✅ 기본 라벨을 캔버스 생성 이후에 추가/선택
-            // AddDefaultLabelIfMissing();
+
+
 
             _canvas.MouseDown += (s, e) =>
             {
@@ -889,7 +880,7 @@ namespace SmartLabelingApp
                     DisablePanMode();
             };
 
-            // ---- 이미지 컨텍스트 메뉴
+
             var ctxImage = new ContextMenuStrip { ShowImageMargin = false, Font = new Font("Segoe UI Emoji", 9f) };
             var miPointer = new ToolStripMenuItem("🖱 | Image Pointer");
             var miPan = new ToolStripMenuItem("✋ | Image Pan");
@@ -951,17 +942,17 @@ namespace SmartLabelingApp
                 miFit.Enabled = hasImg;
                 miClear.Enabled = hasShapes;
 
-                // 현재 마우스 위치를 이미지 좌표로 변환
+
                 var scrPt = _canvas.PointToClient(Control.MousePosition);
                 var imgPt = _canvas.Transform.ScreenToImage(scrPt);
                 _lastCtxImgPointImg = imgPt;
 
-                // 기존에 Add Vertex가 있다면 일단 제거(항상 조건부로 다시 삽입)
+
                 if (ctxImage.Items.Contains(_miAddVertex))
                     ctxImage.Items.Remove(_miAddVertex);
                 _miAddVertex.Tag = null;
 
-                // 마우스 아래의 최상단 폴리곤 탐색
+
                 PolygonShape target = null;
                 if (hasImg && hasShapes && _canvas.Shapes != null)
                 {
@@ -974,7 +965,7 @@ namespace SmartLabelingApp
                     }
                 }
 
-                // 폴리곤일 때만 Add Vertex 메뉴를 동적으로 삽입 (miClear 바로 앞)
+
                 if (target != null)
                 {
                     _miAddVertex.Tag = target;
@@ -985,7 +976,7 @@ namespace SmartLabelingApp
             };
             _canvas.ContextMenuStrip = ctxImage;
 
-            // ---- 리사이즈 연동
+
             _canvasLayer.Resize += (s, e) =>
             {
                 UpdateViewerBounds();
@@ -996,7 +987,7 @@ namespace SmartLabelingApp
             CreateHotkeyPanel();
             UpdateViewerBounds();
 
-            // ---- 레이아웃 이벤트
+
             _canvasHost.Resize += (s, e) => UpdateSideRailsLayout();
             this.Resize += (s, e) => UpdateSideRailsLayout();
             UpdateSideRailsLayout();
@@ -1005,10 +996,10 @@ namespace SmartLabelingApp
             this.SizeChanged += (s, e) => RepositionBrushWindow();
             this.VisibleChanged += (s, e) => RepositionBrushWindow();
 
-            // 초기 하이라이트
+
             HighlightTool(_btnPointer, true, RIGHT_ICON_PX);
             SetHotkeyPanelText(
-            // 1) 기존(콤마 구분) 한 줄
+
             "Label | " +
             "Ctrl+S: Labeling 저장, " +
             "Ctrl+C: Labeling 복사, " +
@@ -1032,18 +1023,17 @@ namespace SmartLabelingApp
             LoadLastExportZipPath();
         }
         #endregion
-
         #region 5) UI Helpers (유틸/파일/레이아웃 보조)
         private async Task TryAutoLoadDefaultModelAsync()
         {
-            // 기본 경로 상수: private const string DEFAULT_MODEL_PATH = @"D:\SLA_Model\SEG.onnx";
+
             var path = DEFAULT_MODEL_PATH;
 
-            // 모델 파일 없으면 UNKNOWN 유지
+
             if (string.IsNullOrWhiteSpace(path) || !System.IO.File.Exists(path))
             {
                 _onnxSession = null;
-                SetModelHeader("UNKNOWN");      // DL Model : UNKNOWN + 버튼 상태 갱신
+                SetModelHeader("UNKNOWN");
                 return;
             }
 
@@ -1053,17 +1043,17 @@ namespace SmartLabelingApp
                 {
                     var progress = new Progress<(int, string)>(p => overlay.Report(p.Item1, p.Item2));
 
-                    // EnsureSession이 내부에서 단계별 ReportStep을 호출해 진행률을 쪼개서 보고함
+
                     var newSession = await Task.Run(() =>
                         SmartLabelingApp.YoloSegOnnx.EnsureSession(path, progress));
 
-                    // 기존 세션 정리 후 교체
+
                     var old = _onnxSession;
                     _onnxSession = newSession;
                     old?.Dispose();
 
-                    // 헤더/버튼 상태 갱신
-                    SetModelHeader(System.IO.Path.GetFileName(path));  // DL Model : SEG.onnx
+
+                    SetModelHeader(System.IO.Path.GetFileName(path));
                 }
             }
             catch
@@ -1073,15 +1063,14 @@ namespace SmartLabelingApp
             }
         }
 
-
         private void CreateModelHeaderPanel(string initialName)
         {
             if (_modelHeaderPanel != null && !_modelHeaderPanel.IsDisposed) return;
 
             _modelHeaderPanel = new Guna.UI2.WinForms.Guna2Panel
             {
-                // Dock = DockStyle.Top,   // ← 사용하지 않음
-                Parent = _leftRail,        // ← 부모를 _leftRail 로!
+
+                Parent = _leftRail,
                 Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
                 Height = MODEL_HEADER_H,
                 BorderRadius = 8,
@@ -1107,14 +1096,13 @@ namespace SmartLabelingApp
             _modelHeaderPanel.BringToFront();
         }
 
-
         private void SetModelHeader(string modelName)
         {
             _currentModelName = string.IsNullOrWhiteSpace(modelName) ? "UNKNOWN" : modelName.Trim();
             if (_modelHeaderLabel != null)
                 _modelHeaderLabel.Text = $"DL Model : {_currentModelName}";
 
-            UpdateModelDependentControls(); // ← 모델 여부에 따라 버튼 상태 갱신
+            UpdateModelDependentControls();
         }
 
         private void UpdateModelDependentControls()
@@ -1122,18 +1110,17 @@ namespace SmartLabelingApp
             bool hasModel = !string.IsNullOrWhiteSpace(_currentModelName)
                             && !_currentModelName.Equals("UNKNOWN", StringComparison.OrdinalIgnoreCase);
 
-            // INFER 버튼: 모델 없으면 비활성화
+
             if (_btnInfer != null)
                 _btnInfer.Enabled = hasModel;
 
-            // Toggle 버튼(슬롯 통째로 숨기면 레이아웃도 깔끔)
+
             if (_slotToggle != null)
             {
                 _slotToggle.Enabled = hasModel;
-                _slotToggle.Visible = hasModel;    // 숨김 처리 (원하면 Visible 대신 Enabled만 써도 됨)
+                _slotToggle.Visible = hasModel;
             }
         }
-
 
         private void CreateHotkeyPanel()
         {
@@ -1148,7 +1135,7 @@ namespace SmartLabelingApp
                 BackColor = Color.Transparent
             };
 
-            // 패널 부모: 캔버스와 같은 레이어에 올립니다.
+
             _hotkeyPanel.Parent = _canvasLayer;
             _hotkeyPanel.ShadowDecoration.Parent = _hotkeyPanel;
 
@@ -1161,7 +1148,7 @@ namespace SmartLabelingApp
                 Padding = new Padding(8, 6, 8, 6),
                 Font = new Font("Segoe UI", 9f, FontStyle.Regular),
                 TextAlign = ContentAlignment.TopLeft,
-                UseMnemonic = false, // & 문자 무시
+                UseMnemonic = false,
                 Text = "Ctrl+S: Labeling 저장\nCtrl+A: 전체 선택"
             };
 
@@ -1180,7 +1167,7 @@ namespace SmartLabelingApp
                 HOTKEY_PANEL_H
             );
 
-            _hotkeyPanel.BringToFront(); // 다른 컨트롤 위로
+            _hotkeyPanel.BringToFront();
         }
 
         private void SetHotkeyPanelText(string text)
@@ -1193,16 +1180,16 @@ namespace SmartLabelingApp
         {
             _toggleOn = !_toggleOn;
 
-            // 아이콘/툴팁 전환 (CreateToolIcon이 내부 툴팁도 설정하지만, 여기서는 _tt로 갱신해줌)
+
             _btnToggle.Image = MakeNearWhiteTransparent(_toggleOn ? Properties.Resources.Toggleon2 : Properties.Resources.Toggleoff2, 248);
 
-            // 슬롯 색 살짝 강조/해제
+
             if (_slotToggle != null)
             {
                 if (_toggleOn)
                 {
                     _slotToggle.BorderColor = Color.MediumSeaGreen;
-                    _slotToggle.FillColor = Color.FromArgb(235, 248, 239); // 연한 그린
+                    _slotToggle.FillColor = Color.FromArgb(235, 248, 239);
                 }
                 else
                 {
@@ -1217,23 +1204,22 @@ namespace SmartLabelingApp
             if (_canvas != null && !_canvas.Focused) _canvas.Focus();
         }
 
-
         private async void OnPrevClick(object sender, EventArgs e)
         {
-            try { NavigateImage(-1); } catch { /* 무시 */ }
+            try { NavigateImage(-1); } catch { }
             await AutoInferIfEnabledAsync();
             _canvas?.Focus();
         }
         private async void OnNextClick(object sender, EventArgs e)
         {
-            try { NavigateImage(+1); } catch { /* 무시 */ }
+            try { NavigateImage(+1); } catch { }
             await AutoInferIfEnabledAsync();
             _canvas?.Focus();
         }
 
         private void NavigateImage(int delta)
         {
-            // 현재 선택 이미지와 동일 폴더의 "직속 이미지"만 대상으로 순환
+
             string cur = GetSelectedImagePathFromTree();
             string folder = GetCurrentImageFolder();
             if (string.IsNullOrEmpty(folder)) return;
@@ -1252,13 +1238,13 @@ namespace SmartLabelingApp
             string path = list[next];
             if (System.IO.File.Exists(path))
             {
-                // 이미지 로드 + 트리 선택 갱신
+
                 LoadImageAtPath(path);
                 SelectTreeNodeByPath(path);
             }
         }
 
-        // 트리에서 해당 경로를 가진 노드를 찾아 선택(이미 구현돼있다면 생략)
+
         private void SelectTreeNodeByPath(string path)
         {
             if (_fileTree == null || _fileTree.Nodes.Count == 0 || string.IsNullOrEmpty(path)) return;
@@ -1286,7 +1272,6 @@ namespace SmartLabelingApp
             }
         }
 
-
         private static string GetLastExportZipPathFile()
         {
             var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -1304,7 +1289,7 @@ namespace SmartLabelingApp
             _btnNext.Size = new Size(half, RIGHT_SLOT_H);
 
             _btnPrev.Location = new Point(0, 0);
-            _btnNext.Location = new Point(half + 6, 0); // 가운데 6px 간격
+            _btnNext.Location = new Point(half + 6, 0);
         }
 
         private void LoadLastExportZipPath()
@@ -1315,7 +1300,7 @@ namespace SmartLabelingApp
                 if (File.Exists(f))
                     _lastExportZipPath = File.ReadAllText(f).Trim();
             }
-            catch { /* 무시 */ }
+            catch { }
         }
 
         private void SaveLastExportZipPath()
@@ -1324,7 +1309,7 @@ namespace SmartLabelingApp
             {
                 File.WriteAllText(GetLastExportZipPathFile(), _lastExportZipPath ?? "");
             }
-            catch { /* 무시 */ }
+            catch { }
         }
 
         private void TryBindAnnotationRootNear(string folder)
@@ -1340,9 +1325,8 @@ namespace SmartLabelingApp
                     LabelStatusService.SetStorageRoot(annotationRoot);
                 }
             }
-            catch { /* ignore */ }
+            catch { }
         }
-
 
         private void EnsureBrushWindow()
         {
@@ -1367,7 +1351,7 @@ namespace SmartLabelingApp
                 _brushWin.Hide();
         }
         #region 6) Event Handlers (버튼/메뉴/키/마우스)
-        #endregion  // 5) UI Helpers
+        #endregion
         private void OnBrushSizeChanged(int px)
         {
             _brushDiameterPx = px;
@@ -1404,7 +1388,7 @@ namespace SmartLabelingApp
                 ShowBrushWindowNear(_brushAnchorBtn);
         }
 
-        // ---- 아이콘/툴 유틸
+
         private static Bitmap MakeNearWhiteTransparent(Image img, byte threshold = 248)
         {
             var src = new Bitmap(img);
@@ -1493,7 +1477,7 @@ namespace SmartLabelingApp
             }
         }
 
-        // [ADD] 무지개 비트맵 생성 (panel.ClientSize에 맞춰 가로 그라디언트)
+
         private static Bitmap MakeRainbowBitmap(Size size)
         {
             if (size.Width < 2 || size.Height < 2)
@@ -1503,19 +1487,19 @@ namespace SmartLabelingApp
             using (var g = Graphics.FromImage(bmp))
             using (var br = new System.Drawing.Drawing2D.LinearGradientBrush(
                 new Rectangle(Point.Empty, size),
-                Color.Red, Color.Violet, 0f)) // 왼→오 0도
+                Color.Red, Color.Violet, 0f))
             {
                 var cb = new System.Drawing.Drawing2D.ColorBlend
                 {
                     Positions = new[] { 0f, 0.2f, 0.4f, 0.6f, 0.8f, 1f },
                     Colors = new[]
                     {
-                Color.FromArgb(255, 255,   0,   0), // Red
-                Color.FromArgb(255, 255, 165,   0), // Orange
-                Color.FromArgb(255, 255, 255,   0), // Yellow
-                Color.FromArgb(255,   0, 128,   0), // Green
-                Color.FromArgb(255,   0,   0, 255), // Blue
-                Color.FromArgb(255, 128,   0, 128), // Purple
+                Color.FromArgb(255, 255,   0,   0),
+                Color.FromArgb(255, 255, 165,   0),
+                Color.FromArgb(255, 255, 255,   0),
+                Color.FromArgb(255,   0, 128,   0),
+                Color.FromArgb(255,   0,   0, 255),
+                Color.FromArgb(255, 128,   0, 128),
             }
                 };
                 br.InterpolationColors = cb;
@@ -1524,7 +1508,7 @@ namespace SmartLabelingApp
             return bmp;
         }
 
-        // [ADD] ROI 모드일 때 무지개 배경 on/off (HighlightTool 결과 위에 덮어쓰기)
+
         private void ApplyAiButtonRainbowTint(bool enable)
         {
             var slot = _btnAI?.Parent as Guna.UI2.WinForms.Guna2Panel;
@@ -1532,54 +1516,51 @@ namespace SmartLabelingApp
 
             if (enable)
             {
-                // 무지개 비트맵 갱신
+
                 if (_aiRainbowBg != null) { _aiRainbowBg.Dispose(); _aiRainbowBg = null; }
                 _aiRainbowBg = MakeRainbowBitmap(slot.ClientSize);
 
-                // 배경은 무지개, 슬롯은 투명 채움만 적용
-                slot.UseTransparentBackground = true;          // 배경 투명 허용
-                slot.FillColor = Color.Transparent;            // 내부 채움만 투명
-                                                               // ★ Border는 건드리지 않음: HighlightTool이 준 라임색 테두리 유지
-                                                               // slot.BorderColor = ... (삭제)
-                                                               // slot.BorderThickness = ... (삭제)
-                                                               // slot.CustomBorderThickness = ... (삭제)
+
+                slot.UseTransparentBackground = true;
+                slot.FillColor = Color.Transparent;
+
+
+
+
 
                 slot.BackgroundImage = _aiRainbowBg;
                 slot.BackgroundImageLayout = ImageLayout.Stretch;
 
-                // 버튼 자체는 투명 배경으로 (무지개 가림 방지)
+
                 _btnAI.BackColor = Color.Transparent;
             }
             else
             {
-                // 무지개 해제
+
                 slot.BackgroundImage = null;
-                // UseTransparentBackground 유지/복귀는 상관없지만 기본으로 돌리고 싶으면 다음 줄 유지
+
                 slot.UseTransparentBackground = false;
 
                 if (_aiRainbowBg != null) { _aiRainbowBg.Dispose(); _aiRainbowBg = null; }
 
-                // 버튼 배경 기본
+
                 _btnAI.BackColor = Color.Transparent;
-                // Border/Fill은 다음 HighlightTool 호출에서 다시 설정됨
+
             }
         }
 
 
-
-
-        // AI 서브모드 진입 함수들
         private void EnterAiFreeformMode()
         {
-            // 기본 AI(프리폼) — 라임색 하이라이트
+
             SetTool(ToolMode.AI, _btnAI);
             _aiSubMode = AiSubMode.Free;
 
-            // HighlightTool이 라임색을 입혀줌
+
             HighlightTool(_btnAI, true, RIGHT_ICON_PX);
             ApplyAiButtonRainbowTint(false);
 
-            // ROI 모드는 반드시 끈다
+
             var ai = _canvas.GetTool(ToolMode.AI) as AITool;
             ai?.DisableRoiMode(_canvas);
 
@@ -1589,15 +1570,15 @@ namespace SmartLabelingApp
 
         private void EnterAiRoiMode()
         {
-            // AI + ROI 서브모드 — 남색 하이라이트
+
             SetTool(ToolMode.AI, _btnAI);
             _aiSubMode = AiSubMode.Roi;
 
-            // 기본 크기 변화 효과는 유지(아이콘 커짐)
+
             HighlightTool(_btnAI, true, RIGHT_ICON_PX);
             ApplyAiButtonRainbowTint(true);
 
-            // 슬롯 색만 남색으로 오버라이드
+
             var slot = _btnAI.Parent as Guna2Panel;
             if (slot != null)
             {
@@ -1605,7 +1586,7 @@ namespace SmartLabelingApp
                 slot.FillColor = Color.FromArgb(240, 242, 255);
             }
 
-            // ROI 모드 켜고(직전 ROI 정규화 좌표 복원)
+
             var ai = _canvas.GetTool(ToolMode.AI) as AITool;
             ai?.EnableRoiMode(_canvas, _lastRoiNorm);
 
@@ -1661,16 +1642,16 @@ namespace SmartLabelingApp
             if (_btnPointer != null) SetTool(ToolMode.Pointer, _btnPointer);
         }
 
-        // ---- 프레임/레이아웃/렌더링
+
         private Rectangle GetFrameRect()
         {
             if (_canvasLayer == null)
-                return new Rectangle(FRAME_X, FRAME_Y, Math.Min(FRAME_W, VIEWER_MAX_W), FRAME_H); // fallback
+                return new Rectangle(FRAME_X, FRAME_Y, Math.Min(FRAME_W, VIEWER_MAX_W), FRAME_H);
 
             int rawW = _canvasLayer.ClientSize.Width - FRAME_X - FRAME_X_OFFSET;
             int rawH = _canvasLayer.ClientSize.Height - FRAME_Y - FRAME_Y_OFFSET;
 
-            int w = Math.Max(2 * FRAME_BORDER + 2, Math.Min(rawW, VIEWER_MAX_W)); // ★ 가로 상한 적용
+            int w = Math.Max(2 * FRAME_BORDER + 2, Math.Min(rawW, VIEWER_MAX_W));
             int h = Math.Max(2 * FRAME_BORDER + 2, rawH);
 
             return new Rectangle(FRAME_X, FRAME_Y, w, h);
@@ -1702,7 +1683,7 @@ namespace SmartLabelingApp
 
             int topPad = Math.Max(0, FRAME_Y);
 
-            // 오른쪽 레일
+
             if (_rightRail != null)
             {
                 _rightRail.Padding = new Padding(0, topPad - RIGHT_DOCK_T, 0, 2);
@@ -1712,7 +1693,7 @@ namespace SmartLabelingApp
                 int leftX = _rightRail.Padding.Left;
                 int topY = _rightRail.Padding.Top;
 
-                // 바1 (상단)
+
                 if (_rightToolDock != null)
                 {
                     _rightToolDock.Left = leftX;
@@ -1721,7 +1702,7 @@ namespace SmartLabelingApp
                     _rightToolDock.Height = RIGHT_BAR1_H;
                 }
 
-                // 바2 (ADD)
+
                 if (_rightToolDock2 != null)
                 {
                     _rightToolDock2.Left = leftX;
@@ -1730,7 +1711,7 @@ namespace SmartLabelingApp
                     _rightToolDock2.Top = _rightToolDock.Bottom + RIGHT_BAR_GAP;
                 }
 
-                // 바3 (SAVE) - 기본 배치
+
                 if (_rightToolDock3 != null)
                 {
                     _rightToolDock3.Left = leftX;
@@ -1744,7 +1725,7 @@ namespace SmartLabelingApp
                         int viewerBottom = _rightRail.Padding.Top + this.ClientSize.Height - FRAME_BORDER + RIGHT_BAR3_TAIL;
                         int desired = viewerBottom - _rightToolDock3.Top;
 
-                        // 공간이 모자라면 바2를 줄여서 확보
+
                         if (desired < RIGHT_BAR_MIN_H)
                         {
                             int need = RIGHT_BAR_MIN_H - desired;
@@ -1759,7 +1740,7 @@ namespace SmartLabelingApp
                             desired = Math.Max(RIGHT_BAR_MIN_H, desired);
                         }
 
-                        // viewerBottom을 초과하지 않도록 제한
+
                         int maxAllow = Math.Max(RIGHT_BAR_MIN_H, viewerBottom - _rightToolDock3.Top);
                         h3 = Math.Min(Math.Max(RIGHT_BAR_MIN_H, desired), maxAllow);
                     }
@@ -1770,7 +1751,7 @@ namespace SmartLabelingApp
                     _rightToolDock3.Height = bottomSpace;
                 }
 
-                // 최종 배치 후, 칩 폭 보정
+
                 AdjustLabelChipWidths();
             }
 
@@ -1778,11 +1759,11 @@ namespace SmartLabelingApp
             {
                 _leftRail.Padding = new Padding(0, topPad - RIGHT_DOCK_T, 0, 2);
 
-                // === [추가] 모델 패널 수동 배치 (트리뷰 밖) ===
+
                 if (_modelHeaderPanel != null)
                 {
                     int x = _leftRail.Padding.Left;
-                    int y = _leftRail.Padding.Top + MODEL_HEADER_Y; // ← 상수로 Y 제어
+                    int y = _leftRail.Padding.Top + MODEL_HEADER_Y;
                     int w = Math.Max(20, _leftRail.ClientSize.Width - _leftRail.Padding.Horizontal);
                     int h = MODEL_HEADER_H;
 
@@ -1790,7 +1771,7 @@ namespace SmartLabelingApp
                     _modelHeaderPanel.BringToFront();
                 }
 
-                // === [추가] 트리뷰 컨테이너(_leftDock)를 모델 패널 '아래'로 수동 배치 ===
+
                 if (_leftDock != null)
                 {
                     int dockLeft = 0;
@@ -1813,7 +1794,7 @@ namespace SmartLabelingApp
                 : FormWindowState.Maximized;
         }
 
-        // ---- Buttons/Actions
+
         private void OnAddClick(object sender, EventArgs e)
         {
             EnsureLabelWindow();
@@ -1822,7 +1803,7 @@ namespace SmartLabelingApp
             Point pScreen = _labelAnchorBtn.PointToScreen(new Point(0, 0));
             Rectangle wa = Screen.FromControl(this).WorkingArea;
 
-            int x = pScreen.X - _labelWin.Width - 12; // 버튼 왼쪽에 12px 간격
+            int x = pScreen.X - _labelWin.Width - 12;
             int y = pScreen.Y + (_labelAnchorBtn.Height / 2) - (_labelWin.Height / 2);
 
             if (x < wa.Left) x = wa.Left + 8;
@@ -1861,20 +1842,20 @@ namespace SmartLabelingApp
                 SaveDatasetYoloWithImages();
                 bool keepAiRoi = (_aiSubMode == AiSubMode.Roi) && _canvas != null && _canvas.Mode == ToolMode.AI;
 
-                // AI-ROI 활성 상태에서는 모드를 유지(포인터로 바꾸지 않음)
+
                 if (keepAiRoi)
                 {
-                    // 선택만 잠깐 정리하고(필요시) 모드는 그대로 둡니다.
+
                     if (_canvas.Selection != null) _canvas.Selection.Clear();
                     _canvas.ClearSelectionButKeepMode();
                 }
                 else
                 {
-                    // 평소처럼 저장 후 기본 상태로 복귀
+
                     _canvas.ClearSelectionAndResetEditing();
                 }
 
-                // 저장 후 단축키 연속 입력을 위해 포커스 환원 (권장)
+
                 _canvas?.Focus();
             }
             catch (Exception ex)
@@ -1908,13 +1889,13 @@ namespace SmartLabelingApp
                                     "EXPORT", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return null;
                 }
-                return di.FullName; // AnnotationData 경로
+                return di.FullName;
             }
         }
 
         private string PickAnnotationDataFolderWithDoubleClick(string expectedAnnotationDataPath = null)
         {
-            // 초기 디렉터리: AnnotationData가 이미 있으면 그 '부모'에서 시작해 목록에 AnnotationData가 보이도록
+
             string initial = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
             if (!string.IsNullOrEmpty(expectedAnnotationDataPath) && Directory.Exists(expectedAnnotationDataPath))
             {
@@ -1928,11 +1909,11 @@ namespace SmartLabelingApp
                 fbd.Description = "AnnotationData 폴더를 선택하세요 (더블클릭으로 바로 선택 가능)";
                 fbd.SelectedPath = initial;
 
-                // ✅ FolderBrowserDialog는 폴더를 더블클릭하면 '선택 + 닫힘'이 기본 동작
+
                 if (fbd.ShowDialog(this) == DialogResult.OK)
                 {
-                    // 사용자가 부모에서 더블클릭하면 그대로 AnnotationData 폴더가 들어옵니다.
-                    // 혹시 사용자가 다른 폴더를 선택했는데 그 안에 AnnotationData가 있으면 보정(원치 않으면 이 블록 제거)
+
+
                     string chosen = fbd.SelectedPath;
                     string candidate = Path.Combine(chosen, "AnnotationData");
                     if (!chosen.EndsWith("AnnotationData", StringComparison.OrdinalIgnoreCase) && Directory.Exists(candidate))
@@ -1943,7 +1924,7 @@ namespace SmartLabelingApp
             }
             return null;
         }
-        // [ADD] 현재 트리에서 모든 이미지 경로 열거
+
         private IEnumerable<string> EnumerateAllImagePathsFromTree()
         {
             var list = new List<string>();
@@ -1954,42 +1935,42 @@ namespace SmartLabelingApp
             }
             return list;
         }
-        // [ADD] 트리에서 현재 선택된 이미지 경로
+
         private string GetSelectedImagePathFromTree()
         {
             if (_fileTree?.SelectedNode == null) return null;
             var n = _fileTree.SelectedNode;
-            // 너희 트리 규칙: 경로는 Tag에 들어있는 것이 일반적
+
             string path = n.Tag as string;
             if (string.IsNullOrEmpty(path)) path = n.ToolTipText;
             if (string.IsNullOrEmpty(path)) path = n.Text;
             return path;
         }
 
-        // [ADD] 현재 선택 노드의 최상위(루트) 폴더 경로
+
         private string GetDatasetRootFolderOfSelected()
         {
             if (_fileTree?.SelectedNode == null) return null;
             TreeNode root = _fileTree.SelectedNode;
             while (root.Parent != null) root = root.Parent;
-            // 루트 노드 Tag에 폴더 경로를 넣는 게 일반적
+
             string rootPath = root.Tag as string;
             if (string.IsNullOrEmpty(rootPath)) rootPath = root.ToolTipText;
             if (string.IsNullOrEmpty(rootPath)) rootPath = root.Text;
-            // 폴더 경로만 남도록 정리
+
             if (!string.IsNullOrEmpty(rootPath) && System.IO.File.Exists(rootPath))
                 rootPath = System.IO.Path.GetDirectoryName(rootPath);
             return rootPath;
         }
 
-        // [ADD] 현재 선택 이미지가 들어있는 폴더(= TopDirectoryOnly 대상 폴더)
+
         private string GetCurrentImageFolder()
         {
             var sel = GetSelectedImagePathFromTree();
             return string.IsNullOrEmpty(sel) ? null : System.IO.Path.GetDirectoryName(sel);
         }
 
-        // [ADD] 지정 폴더의 "직속" 이미지들만 열거 (하위 폴더 제외)
+
         private IEnumerable<string> EnumerateTopImagesInFolder(string folder)
         {
             if (string.IsNullOrEmpty(folder) || !System.IO.Directory.Exists(folder))
@@ -2001,21 +1982,20 @@ namespace SmartLabelingApp
             }
         }
 
-        // (이미 IsImageFile(string) 이 있으면 아래는 넣지 마세요)
-        // private static bool IsImageFile(string path)
-        // {
-        //     var ext = System.IO.Path.GetExtension(path)?.ToLowerInvariant();
-        //     return ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".bmp" || ext == ".tif" || ext == ".tiff" || ext == ".webp";
-        // }
+
+
+
+
+
 
 
         private void CollectImagePathsRecursive(TreeNode node, List<string> acc)
         {
             if (node == null) return;
 
-            // TreeNode.Tag나 Text에서 경로 꺼내는 기존 규칙 활용
+
             string path = node.Tag as string;
-            if (string.IsNullOrEmpty(path)) path = node.ToolTipText; // 프로젝트마다 다름 — 보조
+            if (string.IsNullOrEmpty(path)) path = node.ToolTipText;
             if (string.IsNullOrEmpty(path)) path = node.Text;
 
             if (!string.IsNullOrEmpty(path) && System.IO.File.Exists(path) && IsImageFile(path))
@@ -2026,7 +2006,6 @@ namespace SmartLabelingApp
         }
 
 
-        // [ADD] 전체 이미지 자동 라벨링(현재 활성 라벨 사용, 실패/스킵 카운트, 진행률 표시)
         private async void StartAutoLabelAllImagesAsync()
         {
             try
@@ -2068,21 +2047,21 @@ namespace SmartLabelingApp
 
                         try
                         {
-                            // 이미지 로드
+
                             LoadImageAtPath(path);
 
-                            // [ADD] ROI 복원(같은 비율/위치로)
+
                             var ai = _canvas.GetTool(ToolMode.AI) as AITool;
                             ai?.EnsureRoiForCurrentImage(_canvas, roiSeed);
 
-                            // 이미 도형이 하나라도 있으면 스킵
+
                             if (_canvas != null && _canvas.Shapes != null && _canvas.Shapes.Count > 0)
                             {
                                 skipped++;
                                 continue;
                             }
 
-                            // [CHG] 전체 프레임 자동 라벨링 → "현재 ROI로" 자동 라벨링
+
                             if (ai == null)
                             {
                                 failed++;
@@ -2095,7 +2074,7 @@ namespace SmartLabelingApp
                                 continue;
                             }
 
-                            // 저장 (AI 모드 유지, 선택/편집 잔상 없음)
+
                             OnSaveClick(_btnSave, null);
 
                             labeled++;
@@ -2103,14 +2082,14 @@ namespace SmartLabelingApp
                         catch
                         {
                             failed++;
-                            // 계속 진행
+
                         }
                     }
 
                     overlay.Report(100, "완료");
                 }
 
-                // 결과 요약(간단 메시지). 필요시 exportResultDialog로 교체 가능
+
                 new Guna.UI2.WinForms.Guna2MessageDialog
                 {
                     Parent = this,
@@ -2135,13 +2114,12 @@ namespace SmartLabelingApp
             }
         }
 
-
         string pickedPath = "";
         private async void OnExportClick(object sender, EventArgs e)
         {
             try
             {
-                pickedPath = PickAnnotationDataFolderWithCommonDialog(null); // 초기경로 없으면 null
+                pickedPath = PickAnnotationDataFolderWithCommonDialog(null);
                 if (string.IsNullOrEmpty(pickedPath)) return;
 
                 var modelDir = Path.Combine(pickedPath, "Model");
@@ -2184,7 +2162,7 @@ namespace SmartLabelingApp
                             overlay.Report(5, "Exporting dataset...");
                             DoYoloSegExport(modelDir, resultRoot, pTrain, pVal, pTest, out total, out nTrain, out nVal, out nTest);
                             overlay.Report(40, "Packaging to ZIP...");
-                            zipPath = CreateResultZip(resultRoot, null, (p, msg) => overlay.Report(40 + (int)((p * 60L) / 100), msg) // 40%→100% 구간에 매핑
+                            zipPath = CreateResultZip(resultRoot, null, (p, msg) => overlay.Report(40 + (int)((p * 60L) / 100), msg)
                             );
                         });
 
@@ -2214,7 +2192,6 @@ namespace SmartLabelingApp
             }
         }
 
-
         private string CreateResultZip(string resultRoot, string zipFileName = null, Action<int, string> onProgress = null)
         {
             if (string.IsNullOrWhiteSpace(resultRoot) || !Directory.Exists(resultRoot))
@@ -2223,20 +2200,20 @@ namespace SmartLabelingApp
             var dirInfo = new DirectoryInfo(resultRoot);
             var finalZip = Path.Combine(resultRoot, zipFileName ?? (dirInfo.Name + ".zip"));
 
-            // 임시 위치에 만들고 나중에 이동(자기 자신 포함 방지)
+
             var tempZip = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".zip");
 
-            // 상대 경로 계산( .NET Framework 호환용 )
+
             Func<string, string, string> relPath = (root, path) =>
             {
                 var r = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
                 var p = Path.GetFullPath(path);
                 if (!p.StartsWith(r, StringComparison.OrdinalIgnoreCase)) return Path.GetFileName(path);
                 var rel = p.Substring(r.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                return rel.Replace('\\', '/'); // ZIP 표준 경로 구분자
+                return rel.Replace('\\', '/');
             };
 
-            // 대상으로 할 파일 목록(최종 zip 자신은 제외)
+
             var allFiles = Directory
                 .GetFiles(resultRoot, "*", SearchOption.AllDirectories)
                 .Where(f => !string.Equals(f, finalZip, StringComparison.OrdinalIgnoreCase))
@@ -2256,12 +2233,12 @@ namespace SmartLabelingApp
                     if (onProgress != null)
                     {
                         int percent = total == 0 ? 100 : (int)((done * 100L) / total);
-                        onProgress(percent, Path.GetFileName(file)); // (진행률, 현재 파일명)
+                        onProgress(percent, Path.GetFileName(file));
                     }
                 }
             }
 
-            // 기존 ZIP 있으면 대체
+
             if (File.Exists(finalZip)) File.Delete(finalZip);
             File.Move(tempZip, finalZip);
 
@@ -2269,9 +2246,8 @@ namespace SmartLabelingApp
         }
 
 
-        /// <summary>
-        /// AnnotationData\\Model을 읽어 YOLO Segmentation 데이터셋으로 재구성하여 RESULTMODEL에 저장
-        /// </summary>
+
+
         private void DoYoloSegExport(string modelDir, string resultRoot, int pctTrain, int pctVal, int pctTest,
                                      out int total, out int nTrain, out int nVal, out int nTest)
         {
@@ -2283,14 +2259,14 @@ namespace SmartLabelingApp
             if (!Directory.Exists(imagesDir) || !Directory.Exists(labelsDir) || !File.Exists(classesPath))
                 throw new InvalidOperationException("Model 폴더 구조가 올바르지 않습니다.");
 
-            // 1) classes 로드
+
             var classNames = File.ReadAllLines(classesPath, Encoding.UTF8)
                                  .Select(s => (s ?? "").Trim())
                                  .Where(s => s.Length > 0)
                                  .ToList();
             if (classNames.Count == 0) classNames.Add("Default");
 
-            // 2) 이미지/라벨 페어 매칭 (대소문자 무시)
+
             var images = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var labels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
@@ -2316,7 +2292,7 @@ namespace SmartLabelingApp
             }
             if (pairs.Count == 0) throw new InvalidOperationException("이미지-라벨 쌍을 찾지 못했습니다.");
 
-            // 3) 셔플 & 분할
+
             Shuffle(pairs, 0);
             total = pairs.Count;
             nVal = (int)Math.Round(total * (pctVal / 100.0));
@@ -2328,7 +2304,7 @@ namespace SmartLabelingApp
             var valSet = pairs.Skip(nTrain).Take(nVal).ToList();
             var testSet = pairs.Skip(nTrain + nVal).Take(nTest).ToList();
 
-            // 4) 결과 폴더 구조
+
             var subDirs = new[]
             {
                 Path.Combine(resultRoot, "images", "train"),
@@ -2340,12 +2316,12 @@ namespace SmartLabelingApp
             };
             foreach (var d in subDirs) Directory.CreateDirectory(d);
 
-            // 5) 복사
+
             CopyPairs(trainSet, Path.Combine(resultRoot, "images", "train"), Path.Combine(resultRoot, "labels", "train"));
             CopyPairs(valSet, Path.Combine(resultRoot, "images", "val"), Path.Combine(resultRoot, "labels", "val"));
             CopyPairs(testSet, Path.Combine(resultRoot, "images", "test"), Path.Combine(resultRoot, "labels", "test"));
 
-            // 6) data.yaml 생성
+
             var sb = new StringBuilder();
             sb.AppendLine("path: " + QuoteYamlPath(resultRoot));
             sb.AppendLine("train: images/train");
@@ -2361,7 +2337,7 @@ namespace SmartLabelingApp
         private static string QuoteYamlPath(string p)
         {
             if (string.IsNullOrEmpty(p)) return "''";
-            // 공백/특수문자 포함 시 작은따옴표
+
             if (p.IndexOfAny(new[] { ' ', ':', '#', '{', '}', '[', ']', ',', '&', '*', '?', '|', '<', '>', '=', '!', '%', '@', '\\' }) >= 0)
                 return "'" + p.Replace("'", "''") + "'";
             return p;
@@ -2370,7 +2346,7 @@ namespace SmartLabelingApp
         private static string EscapeYaml(string s)
         {
             if (s == null) return "''";
-            // 일반적으로 이름엔 따옴표만 이스케이프
+
             if (s.IndexOfAny(new[] { ':', '#', '-', '?', '{', '}', ',', '&', '*', '!', '|', '>', '\'', '\"', '%', '@', '`' }) >= 0 || s.Contains(" "))
                 return "'" + s.Replace("'", "''") + "'";
             return s;
@@ -2409,7 +2385,7 @@ namespace SmartLabelingApp
             }
             if (keyData == (Keys.Control | Keys.E))
             {
-                // AI 모드가 아니면 안내
+
                 if (_canvas == null || _canvas.Mode != ToolMode.AI)
                 {
                     new Guna.UI2.WinForms.Guna2MessageDialog
@@ -2424,7 +2400,7 @@ namespace SmartLabelingApp
                     return true;
                 }
 
-                // 현재 활성 라벨 확인
+
                 if (string.IsNullOrWhiteSpace(_canvas.ActiveLabelName))
                 {
                     new Guna.UI2.WinForms.Guna2MessageDialog
@@ -2455,7 +2431,7 @@ namespace SmartLabelingApp
                     return true;
                 }
 
-                // 선택 이미지가 루트의 "직속"이 아니면 실행 불가
+
                 if (!string.Equals(baseDir, rootDir, StringComparison.OrdinalIgnoreCase))
                 {
                     new Guna.UI2.WinForms.Guna2MessageDialog
@@ -2485,7 +2461,7 @@ namespace SmartLabelingApp
                     return true;
                 }
 
-                // 확인 다이얼로그
+
                 var confirm = new Guna.UI2.WinForms.Guna2MessageDialog
                 {
                     Parent = this,
@@ -2498,7 +2474,7 @@ namespace SmartLabelingApp
 
                 if (confirm == DialogResult.Yes)
                 {
-                    // 비동기 시작 (UI 블로킹 방지)
+
                     StartAutoLabelAllImagesAsync();
                 }
                 return true;
@@ -2513,9 +2489,8 @@ namespace SmartLabelingApp
                         NavigateToNextImage();
                     return true;
                 }
-                // 선택이 있을 때는 캔버스가 화살표 입력(도형 이동 등)을 처리
-            }
 
+            }
 
             return base.ProcessCmdKey(ref msg, keyData);
         }
@@ -2526,15 +2501,15 @@ namespace SmartLabelingApp
             {
                 _labelWin = new LabelCreateWindow();
             }
-            _labelWin.ResetForNewLabel(); // 이름 빈칸 초기화, 미리보기 동기화
+            _labelWin.ResetForNewLabel();
         }
 
-        // ---------- 라벨 칩 ----------
+
         private void AddLabelChip(string labelName, Color color)
         {
             if (_rightTools2 == null) return;
 
-            int chipW = Math.Max(LABEL_CHIP_MIN_W, _btnAdd.Width); // ★ ADD와 동일 폭
+            int chipW = Math.Max(LABEL_CHIP_MIN_W, _btnAdd.Width);
             int chipH = 24;
 
             var chip = MakeLabelChip(labelName, color, chipW, chipH);
@@ -2693,7 +2668,7 @@ namespace SmartLabelingApp
             }
         }
 
-        // ------------------------------------------------------------
+
 
         private async void OnOpenClick(object sender, EventArgs e)
         {
@@ -2716,17 +2691,17 @@ namespace SmartLabelingApp
                     var ext = System.IO.Path.GetExtension(chosen);
                     if (!string.IsNullOrEmpty(ext) && ext.Equals(".onnx", StringComparison.OrdinalIgnoreCase))
                     {
-                        // --- ONNX: 세션 미리 만들고 필드에 보관 (진행률 오버레이 표시)
-                        using (var overlay = new ProgressOverlay(this, "Loading model")) // 진행률 UI
+
+                        using (var overlay = new ProgressOverlay(this, "Loading model"))
                         {
                             var progress = new Progress<(int, string)>(p => overlay.Report(p.Item1, p.Item2));
                             try
                             {
                                 await Task.Run(() =>
                                 {
-                                    // 세션 준비(내부 캐시/EP 폴백 사용)
+
                                     _onnxSession = SmartLabelingApp.YoloSegOnnx.EnsureSession(chosen, progress);
-                                    _currentModelName = chosen; // (선택) 경로도 기억
+                                    _currentModelName = chosen;
                                 });
                             }
                             catch (Exception ex)
@@ -2751,7 +2726,7 @@ namespace SmartLabelingApp
                         return;
                     }
 
-                    // --- 이미지 파일 처리 (기존 그대로)
+
                     if (IsImageFile(chosen))
                     {
                         try
@@ -2797,13 +2772,13 @@ namespace SmartLabelingApp
         }
         private async Task AutoInferIfEnabledAsync()
         {
-            // 0) 조건: 토글 OFF면 종료
+
             if (!_toggleOn) return;
 
-            // 1) 세션/이미지 체크
+
             if (_onnxSession == null || _canvas?.Image == null) return;
 
-            // 2) 직전 작업 취소(연달아 Next/Prev 눌러도 마지막 것만 수행)
+
             _autoInferCts?.Cancel();
             _autoInferCts = new System.Threading.CancellationTokenSource();
             var token = _autoInferCts.Token;
@@ -2819,7 +2794,7 @@ namespace SmartLabelingApp
                     {
                         if (token.IsCancellationRequested) return;
 
-                        // Infer → Overlay
+
                         var res = YoloSegOnnx.Infer(_onnxSession, srcCopy);
                         if (token.IsCancellationRequested) return;
 
@@ -2830,7 +2805,7 @@ namespace SmartLabelingApp
 
                 if (token.IsCancellationRequested || overlayed == null) return;
 
-                // 3) UI 적용 (기존 이미지 해제해서 누수 방지)
+
                 var old = _canvas.Image;
                 _canvas.Image = overlayed;
                 old?.Dispose();
@@ -2839,7 +2814,7 @@ namespace SmartLabelingApp
                 if (!string.IsNullOrEmpty(titleSuffix))
                     this.Text = $"{this.Text.Split('|')[0].Trim()} | {titleSuffix}";
             }
-            catch (OperationCanceledException) { /* 무시(디바운스) */ }
+            catch (OperationCanceledException) { }
             catch (Exception ex)
             {
                 new Guna.UI2.WinForms.Guna2MessageDialog
@@ -2852,7 +2827,6 @@ namespace SmartLabelingApp
                 }.Show();
             }
         }
-
 
         private bool TryLoadYoloForCurrentImage()
         {
@@ -2867,15 +2841,15 @@ namespace SmartLabelingApp
                 var labelsPath = Path.Combine(root, "labels", Path.GetFileNameWithoutExtension(_currentImagePath) + ".txt");
                 if (!File.Exists(classesPath) || !File.Exists(labelsPath)) return false;
 
-                // 1) classes 먼저 파싱
+
                 var classes = ParseClassesTxt(classesPath);
                 if (classes == null || classes.Count == 0) classes = new List<string> { "Default" };
 
-                // 2) notes.json에 저장된 색상 있으면 먼저 불러오기 → 칩/맵 동기화
+
                 LoadClassColorsFromNotesJson(root, classes);
                 RebuildClassColorMapFromChips();
 
-                // 3) 라벨 파일 로드 (색상은 _classColorMap을 통해 적용됨)
+
                 LoadYoloLabelFile(labelsPath, classes);
 
                 return _canvas.Shapes != null && _canvas.Shapes.Count > 0;
@@ -2895,20 +2869,20 @@ namespace SmartLabelingApp
 
                 var li = (LabelInfo)pnl.Tag;
 
-                // 이름
+
                 string name = null;
                 try
                 {
                     var nprop = li.GetType().GetProperty("Name");
                     if (nprop != null) name = nprop.GetValue(li, null) as string;
                 }
-                catch { /* ignore */ }
+                catch { }
                 if (string.IsNullOrWhiteSpace(name))
                     name = pnl.Text;
                 if (string.IsNullOrWhiteSpace(name))
                     continue;
 
-                // 색상
+
                 Color baseColor = Color.Empty;
                 try
                 {
@@ -2937,17 +2911,17 @@ namespace SmartLabelingApp
                         }
                     }
                 }
-                catch { /* ignore */ }
+                catch { }
 
                 if (baseColor.IsEmpty)
-                    baseColor = ColorFromNameDeterministic(name); // 이름으로 고정색 생성
+                    baseColor = ColorFromNameDeterministic(name);
 
                 if (!_classColorMap.ContainsKey(name))
                     _classColorMap.Add(name, baseColor);
             }
         }
 
-        // 이름으로 항상 같은 색을 만드는 간단한 함수(안 겹치게 은근 다양함)
+
         private Color ColorFromNameDeterministic(string name)
         {
             unchecked
@@ -2956,7 +2930,7 @@ namespace SmartLabelingApp
                 for (int i = 0; i < name.Length; i++)
                     h = h * 31 + name[i];
 
-                // 0..63 범위를 3채널로 쪼개 사용 (128~240로 제한)
+
                 int r = 128 + ((h) & 63) * 2;
                 int g = 128 + ((h >> 6) & 63) * 2;
                 int b = 128 + ((h >> 12) & 63) * 2;
@@ -2968,7 +2942,7 @@ namespace SmartLabelingApp
             }
         }
 
-        // stroke/fill 색 꺼내기(없으면 이름 고정색 + 반투명 fill)
+
         private void GetColorsForClass(string labelName, out Color stroke, out Color fill)
         {
             if (string.IsNullOrWhiteSpace(labelName)) labelName = "Default";
@@ -2978,11 +2952,10 @@ namespace SmartLabelingApp
                 baseColor = ColorFromNameDeterministic(labelName);
 
             stroke = baseColor;
-            fill = Color.FromArgb(72, baseColor); // 기존 스타일과 맞춤(반투명)
+            fill = Color.FromArgb(72, baseColor);
         }
 
 
-        // 이미지 경로로부터 데이터셋 루트 추정:  .../images/xxx.ext  → 루트는 images 상위
         private string FindDatasetRootForImage(string imagePath)
         {
             var dir = new DirectoryInfo(Path.GetDirectoryName(imagePath));
@@ -2993,9 +2966,9 @@ namespace SmartLabelingApp
                 var cp = Path.Combine(_lastYoloExportRoot, "classes.txt");
                 var lp = Path.Combine(_lastYoloExportRoot, "labels", baseName + ".txt");
                 if (File.Exists(cp) && File.Exists(lp))
-                    return _lastYoloExportRoot;  // ★ 원본 이미지가 다른 폴더여도 이 루트를 사용
+                    return _lastYoloExportRoot;
             }
-            // 케이스 A: 실제로 images 폴더 아래에서 열었을 때
+
             if (dir != null && dir.Name.Equals("images", StringComparison.OrdinalIgnoreCase) && dir.Parent != null)
             {
                 var root = dir.Parent.FullName;
@@ -3004,8 +2977,8 @@ namespace SmartLabelingApp
                 if (classesOk && labelOk) return root;
             }
 
-            // 케이스 B: 같은 폴더이거나 임의 폴더에서 열었을 때 → 근처에서 루트 추적
-            // 상위 3단계까지 올라가며 classes.txt + labels/<파일>.txt를 찾음
+
+
             var walk = dir;
             for (int i = 0; i < 3 && walk != null; i++, walk = walk.Parent)
             {
@@ -3048,7 +3021,7 @@ namespace SmartLabelingApp
                 if (!int.TryParse(tok[0], out cls)) continue;
                 string labelName = (cls >= 0 && cls < classes.Count) ? classes[cls] : "cls_" + cls.ToString();
 
-                // 박스: 5 토큰 (cls cx cy w h)
+
                 if (tok.Length == 5)
                 {
                     float cx = float.Parse(tok[1], ci) * W;
@@ -3064,7 +3037,7 @@ namespace SmartLabelingApp
                     continue;
                 }
 
-                // 폴리곤: (cls x1 y1 x2 y2 ...), 좌표쌍 개수 검사
+
                 if (((tok.Length - 1) % 2) == 0 && (tok.Length - 1) >= 6)
                 {
                     var pts = new List<PointF>();
@@ -3082,7 +3055,7 @@ namespace SmartLabelingApp
             }
         }
 
-        // ---- 파일/트리
+
         private static bool IsImageFile(string path)
         {
             try
@@ -3120,7 +3093,7 @@ namespace SmartLabelingApp
                     node.Nodes.Add(subNode);
                 }
             }
-            catch { /* 권한 문제 등 무시 */ }
+            catch { }
 
             try
             {
@@ -3136,7 +3109,7 @@ namespace SmartLabelingApp
                     node.Nodes.Add(imgNode);
                 }
             }
-            catch { /* 무시 */ }
+            catch { }
 
             return node;
         }
@@ -3181,7 +3154,7 @@ namespace SmartLabelingApp
                     TryBindAnnotationRootNear(Path.GetDirectoryName(_currentImagePath));
                     _yoloLoadedForCurrentImage = TryLoadYoloForCurrentImage();
 
-                    // AI-ROI 모드면 새 이미지에 ROI 복원
+
                     if (_aiSubMode == AiSubMode.Roi)
                     {
                         var ai = _canvas.GetTool(ToolMode.AI) as AITool;
@@ -3191,7 +3164,7 @@ namespace SmartLabelingApp
 
                 BeginInvoke(new Action(() =>
                 {
-                    if (_canvas != null && _canvas.CanFocus) _canvas.Focus();    // ★ 안전망
+                    if (_canvas != null && _canvas.CanFocus) _canvas.Focus();
                 }));
             }
             catch (Exception ex)
@@ -3201,7 +3174,7 @@ namespace SmartLabelingApp
             }
         }
 
-        // ===== 이미지 네비게이션 (Ctrl+Up/Down) =====
+
         private bool IsImageNode(TreeNode n)
         {
             if (n == null) return false;
@@ -3230,13 +3203,13 @@ namespace SmartLabelingApp
             var stack = new Stack<TreeNode>();
             foreach (TreeNode n in _fileTree.Nodes) stack.Push(n);
 
-            // DFS (루트부터 아래로, TreeView 표시 순서 유지 위해 역순 push)
+
             while (stack.Count > 0)
             {
                 var node = stack.Pop();
                 if (IsImageNode(node)) list.Add(node);
 
-                // push children in reverse so that left-to-right traversal is preserved
+
                 for (int i = node.Nodes.Count - 1; i >= 0; i--)
                     stack.Push(node.Nodes[i]);
             }
@@ -3248,7 +3221,7 @@ namespace SmartLabelingApp
             if (node == null) return;
             var path = node.Tag as string;
             if (string.IsNullOrEmpty(path)) return;
-            // TreeView 선택만 바꿔도 AfterSelect에서 LoadImageAtPath가 호출됨
+
             if (_fileTree != null) _fileTree.SelectedNode = node;
             else LoadImageAtPath(path);
         }
@@ -3260,7 +3233,7 @@ namespace SmartLabelingApp
 
             var cur = FindCurrentImageNode();
             int idx = (cur != null) ? nodes.IndexOf(cur) : -1;
-            if (idx < 0) idx = -1; // not found or none selected
+            if (idx < 0) idx = -1;
 
             if (idx + 1 < nodes.Count)
                 OpenImageFromNode(nodes[idx + 1]);
@@ -3278,9 +3251,7 @@ namespace SmartLabelingApp
                 OpenImageFromNode(nodes[idx - 1]);
         }
 
-
-        #endregion  // 8) Utilities & Helpers
-
+        #endregion
         #region 6) Export / Import (YOLO Segmentation)
 
         private List<string> GetCurrentClasses()
@@ -3310,15 +3281,15 @@ namespace SmartLabelingApp
             if (string.IsNullOrEmpty(_currentImagePath) || !File.Exists(_currentImagePath))
                 throw new InvalidOperationException("현재 이미지 경로를 찾을 수 없습니다.");
 
-            // 0) 저장 루트 결정
+
             var baseDir = Path.GetDirectoryName(_currentImagePath);
             var annotationRoot = Path.Combine(baseDir, "AnnotationData");
             var rootDir = Path.Combine(annotationRoot, "Model");
 
-            // ✅ LabelStatusService 저장소 루트 지정 (배지/DB를 이 위치에 유지)
+
             LabelStatusService.SetStorageRoot(annotationRoot);
 
-            // 1) 폴더 구조
+
             var imagesDir = Path.Combine(rootDir, "images");
             var labelsDir = Path.Combine(rootDir, "labels");
             var masksDir = Path.Combine(rootDir, "masks");
@@ -3326,19 +3297,19 @@ namespace SmartLabelingApp
             Directory.CreateDirectory(labelsDir);
             Directory.CreateDirectory(masksDir);
 
-            // 2) classes.txt / notes.json
-            var classes = GetCurrentClasses(); // 기존 코드 그대로 사용
+
+            var classes = GetCurrentClasses();
             File.WriteAllLines(Path.Combine(rootDir, "classes.txt"), classes, Encoding.UTF8);
             SaveNotesJson(Path.Combine(rootDir, "notes.json"), classes);
-            _lastYoloExportRoot = rootDir; // ✅ 이후 배지 적용에 필요
+            _lastYoloExportRoot = rootDir;
 
-            // 3) 이미지 복사
+
             var srcExt = Path.GetExtension(_currentImagePath);
             var baseName = Path.GetFileNameWithoutExtension(_currentImagePath);
             var dstImagePath = Path.Combine(imagesDir, baseName + srcExt);
             File.Copy(_currentImagePath, dstImagePath, true);
 
-            // 4) YOLO 라벨 작성
+
             var dstLabelPath = Path.Combine(labelsDir, baseName + ".txt");
             WriteYoloLabelForCurrentImage(dstLabelPath, classes);
 
@@ -3348,19 +3319,18 @@ namespace SmartLabelingApp
                 if (mask != null) mask.Save(dstMaskPath, ImageFormat.Png);
             }
 
-            // 5) ✅ DB에 라벨 상태 반영 (원본 이미지 체크/개수 업데이트용)
+
             LabelStatusService.MarkLabeled(_currentImagePath, _canvas.Shapes.Count);
 
-            // 6) ✅ 트리뷰 해당 노드에 배지 재적용 (초록 체크 + 개수 툴팁)
+
             try
             {
                 var node = FindNodeByImagePath(_currentImagePath);
                 if (node != null)
                     LabelStatusService.ApplyNodeState(node, _currentImagePath, _lastYoloExportRoot, showCountSuffix: true);
             }
-            catch { /* 배지 리프레시 실패는 무시 */ }
+            catch { }
         }
-
 
         private TreeNode FindNodeByImagePath(string fullPath)
         {
@@ -3385,12 +3355,11 @@ namespace SmartLabelingApp
             return null;
         }
 
-
         private void SaveNotesJson(string path, List<string> classes)
         {
             var sb = new StringBuilder();
             sb.AppendLine("{");
-            // categories (for compatibility)
+
             sb.AppendLine("  \"categories\": [");
             for (int i = 0; i < classes.Count; i++)
             {
@@ -3401,7 +3370,7 @@ namespace SmartLabelingApp
             }
             sb.AppendLine("  ],");
 
-            // colors map
+
             sb.AppendLine("  \"colors\": {");
             for (int i = 0; i < classes.Count; i++)
             {
@@ -3427,14 +3396,14 @@ namespace SmartLabelingApp
             return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
         }
 
-        /// <summary>Return the base stroke color for a class name using current chips/map, or a deterministic fallback.</summary>
+
         private Color GetBaseColorForClass(string name)
         {
             if (string.IsNullOrWhiteSpace(name)) name = "Default";
-            // 1) from explicit map
+
             if (_classColorMap.TryGetValue(name, out var c) && c != Color.Empty) return c;
 
-            // 2) from an existing chip
+
             if (_rightTools2 != null)
             {
                 foreach (Control cc in _rightTools2.Controls)
@@ -3446,7 +3415,7 @@ namespace SmartLabelingApp
                         return li.Color;
                 }
             }
-            // 3) deterministic fallback
+
             return ColorFromNameDeterministic(name);
         }
 
@@ -3473,19 +3442,19 @@ namespace SmartLabelingApp
             return false;
         }
 
-        /// <summary>Apply a color to a chip (UI + Tag) creating the swatch if needed.</summary>
+
         private void ApplyColorToChip(Guna2Panel chip, Color color)
         {
             if (chip == null) return;
-            // Update tag
+
             if (chip.Tag is LabelInfo li)
                 chip.Tag = new LabelInfo(li.Name, color);
-            // Update swatch (child panel)
+
             var swatch = chip.Controls.OfType<Guna2Panel>().FirstOrDefault(p => p.Name == "__LabelSwatch");
             if (swatch != null) swatch.FillColor = color;
         }
 
-        /// <summary>Find chip by label name (case-insensitive).</summary>
+
         private Guna2Panel FindChipByName(string name)
         {
             if (_rightTools2 == null || string.IsNullOrWhiteSpace(name)) return null;
@@ -3500,10 +3469,10 @@ namespace SmartLabelingApp
             return null;
         }
 
-        /// <summary>
-        /// Load preferred class colors from notes.json if it contains a "colors" object.
-        /// Also syncs the right label chips to use those colors (creating chips if missing).
-        /// </summary>
+
+
+
+
         private void LoadClassColorsFromNotesJson(string rootDir, List<string> classes)
         {
             try
@@ -3512,10 +3481,10 @@ namespace SmartLabelingApp
                 if (!File.Exists(notesPath)) return;
 
                 string json = File.ReadAllText(notesPath, Encoding.UTF8);
-                // naive scan for "colors": { "name":"#RRGGBB" ... }
+
                 var colors = new Dictionary<string, Color>(StringComparer.OrdinalIgnoreCase);
 
-                // Very small, simple parser: look for "colors" object then key/value pairs
+
                 int idx = json.IndexOf("colors", StringComparison.OrdinalIgnoreCase);
                 if (idx >= 0)
                 {
@@ -3536,7 +3505,7 @@ namespace SmartLabelingApp
                         if (end > brace)
                         {
                             string obj = json.Substring(brace + 1, end - brace - 1);
-                            // split by commas at top level
+
                             var parts = obj.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
                             foreach (var part in parts)
                             {
@@ -3555,18 +3524,18 @@ namespace SmartLabelingApp
 
                 if (colors.Count > 0)
                 {
-                    // Merge into _classColorMap and sync chips
+
                     foreach (var kv in colors)
                         _classColorMap[kv.Key] = kv.Value;
 
-                    // Ensure all classes have chips with correct color
+
                     foreach (var name in classes)
                     {
                         var want = GetBaseColorForClass(name);
                         var chip = FindChipByName(name);
                         if (chip == null)
                         {
-                            // create chip
+
                             AddLabelChip(name, want);
                             chip = FindChipByName(name);
                         }
@@ -3577,7 +3546,7 @@ namespace SmartLabelingApp
                     }
                 }
             }
-            catch { /* ignore parsing errors */ }
+            catch { }
         }
 
         private static float Clamp01(float v) => (v < 0f) ? 0f : (v > 1f ? 1f : v);
@@ -3620,45 +3589,45 @@ namespace SmartLabelingApp
         {
             try
             {
-                // 1) 표준 가중치 경로
+
                 string weightsPath = PathHelper.ResolvePretrainedPath();
 
-                // 2) 없으면 다이얼로그 표시
+
                 if (!File.Exists(weightsPath))
                 {
-                    // (중요) 다이얼로그의 결과를 받는다
+
                     var dr = PretrainedWeightsDialog.ShowForMissingDefault(this, weightsPath);
 
                     if (dr != DialogResult.OK)
                     {
-                        // 사용자가 Close로 그냥 닫았거나 실패 → 조용히 종료 (대기/메시지 박스 X)
+
                         return;
                     }
 
-                    // 성공(OK)로 닫힌 경우에만 재확인
+
                     weightsPath = PathHelper.ResolvePretrainedPath();
 
-                    // 복사/다운로드 직후 잠깐의 파일 잠금/지연을 대비해 아주 짧게만 대기(선택)
+
                     if (!File.Exists(weightsPath))
                     {
                         bool ready = await WaitForFileReadyAsync(
                             weightsPath,
-                            TimeSpan.FromSeconds(5),           // 짧게만 기다림
-                            (pct, status) => { /* UI 갱신 불필요 → no-op */ }
+                            TimeSpan.FromSeconds(5),
+                            (pct, status) => { }
                         );
 
                         if (!ready)
                         {
-                            // 여기서도 조용히 반환하거나, 안내만 가볍게 띄울지 선택
-                            // MessageBox를 꼭 띄우고 싶다면 아래 주석 해제:
-                            // new Guna.UI2.WinForms.Guna2MessageDialog { Parent = this, Caption = "학습 시작 불가",
-                            //     Text = "프리트레인 가중치가 준비되지 않았습니다.", Buttons = ..., Icon = ..., Style = ... }.Show();
+
+
+
+
                             return;
                         }
                     }
                 }
 
-                // 3) 여기부터 실제 학습
+
                 StartTraining(weightsPath);
             }
             catch (Exception ex)
@@ -3699,23 +3668,23 @@ namespace SmartLabelingApp
                 {
                     await Task.Run(() =>
                     {
-                        // 1) 추론
+
                         var res = YoloSegOnnx.Infer(_onnxSession, srcCopy);
-                        // 2) 오버레이
+
                         overlayed = YoloSegOnnx.Overlay(srcCopy, res);
 
                         titleSuffix = res.TitleSuffix;
                     });
                 }
 
-                // 3) 새 창 없이, 현재 캔버스 이미지에 바로 오버레이 적용
+
                 if (overlayed != null)
                 {
-                    // 원본 위에 오버레이 결과를 '보기용'으로 적용
+
                     _canvas.Image = overlayed;
                     _canvas.Invalidate();
 
-                    // 타이틀 업데이트(선택)
+
                     if (!string.IsNullOrEmpty(titleSuffix))
                         this.Text = $"{this.Text.Split('|')[0].Trim()} | {titleSuffix}";
                 }
@@ -3732,7 +3701,6 @@ namespace SmartLabelingApp
                 }.Show();
             }
         }
-
 
         private async Task<bool> WaitForFileReadyAsync(string path, TimeSpan timeout, Action<int, string> progress = null)
         {
@@ -3754,11 +3722,11 @@ namespace SmartLabelingApp
                             {
                                 lastSize = size;
                                 lastChange = DateTime.UtcNow;
-                                progress?.Invoke(80, "다운로드 중..."); // 중반 이후는 '다운로드 중'
+                                progress?.Invoke(80, "다운로드 중...");
                             }
                             else
                             {
-                                // 1초 동안 크기 변화 없으면 완료로 간주
+
                                 if ((DateTime.UtcNow - lastChange).TotalSeconds >= 1.0)
                                 {
                                     progress?.Invoke(100, "가중치 준비 완료");
@@ -3768,28 +3736,27 @@ namespace SmartLabelingApp
                         }
                     }
                 }
-                catch { /* 파일이 잠깐 잠겨있을 수 있음 → 무시하고 재시도 */ }
+                catch { }
 
-                // 시간 기반 진행률(최대 95%)
+
                 double frac = (DateTime.UtcNow - start).TotalMilliseconds / timeout.TotalMilliseconds;
                 int pct = Math.Min(95, Math.Max(5, (int)Math.Round(frac * 95)));
                 progress?.Invoke(pct, "가중치 확인 중...");
 
                 await Task.Delay(500);
             }
-            return File.Exists(path); // 타임아웃 시 마지막 한 번 더 확인
+            return File.Exists(path);
         }
-
 
         private async void StartTraining(string pretrainedWeightsPath)
         {
-            // =====[ 공통 경로/도구 ]===================================================
+
             const string baseDir = @"D:\SmartLabelingApp";
             string venvDir = Path.Combine(baseDir, ".venv");
             string pythonExe = Path.Combine(venvDir, "Scripts", "python.exe");
             string yoloExe = Path.Combine(venvDir, "Scripts", "yolo.exe");
 
-            // =====[ STEP 0) 입력 검증 ]================================================
+
             if (string.IsNullOrEmpty(pretrainedWeightsPath) || !File.Exists(pretrainedWeightsPath))
             {
                 new Guna.UI2.WinForms.Guna2MessageDialog
@@ -3806,8 +3773,6 @@ namespace SmartLabelingApp
 
 
 
-            // =====[ STEP 1) ZIP 선택 ]=================================================
-
             string zipPath;
             using (var ofd = new OpenFileDialog())
             {
@@ -3818,12 +3783,12 @@ namespace SmartLabelingApp
                 ofd.Multiselect = false;
                 ofd.RestoreDirectory = true;
 
-                // ✅ 시작 위치 결정: 마지막 Export ZIP이 있으면 그 폴더/파일, 없으면 데스크탑
+
                 string initialDir;
                 if (!string.IsNullOrEmpty(_lastExportZipPath) && File.Exists(_lastExportZipPath))
                 {
                     initialDir = Path.GetDirectoryName(_lastExportZipPath);
-                    // 파일이 실제 존재하면 기본 선택까지 해 줌(사용자는 바로 Enter만 눌러도 됨)
+
                     ofd.FileName = Path.GetFileName(_lastExportZipPath);
                 }
                 else
@@ -3836,7 +3801,7 @@ namespace SmartLabelingApp
                 zipPath = ofd.FileName;
             }
 
-            // =====[ STEP 2) venv 준비 (있으면 건너뜀) ]================================
+
             using (var overlay = new ProgressOverlay(this, "환경 준비", true))
             {
                 try
@@ -3863,8 +3828,8 @@ namespace SmartLabelingApp
                 }
             }
 
-            // =====[ STEP 3) ZIP 해제 + 데이터셋 검증 ]=================================
-            string extractRoot = Path.Combine(baseDir, "Result"); // Result 폴더를 재생성
+
+            string extractRoot = Path.Combine(baseDir, "Result");
             string dataYamlPath = null;
             string datasetRoot = null;
             int trainImg = 0, trainLbl = 0, valImg = 0, valLbl = 0;
@@ -3912,7 +3877,7 @@ namespace SmartLabelingApp
                 }
             }
 
-            // =====[ STEP 4) 학습 실행 ]================================================
+
             string projectDir = Path.Combine(baseDir, "runs");
             Directory.CreateDirectory(projectDir);
             string runName = "finetune_" + DateTime.Now.ToString("yyyyMMdd_HHmmss");
@@ -3921,7 +3886,7 @@ namespace SmartLabelingApp
             int epochs = 20;
             int imgsz = 1024;
             int batch = 8;
-            string device = "0";      // 첫 번째 GPU
+            string device = "0";
 
             string args = string.Join(" ",
     "segment", "train",
@@ -3937,7 +3902,6 @@ namespace SmartLabelingApp
     "name=" + YoloCli.Quote(runName)
 );
 
-
             string bestCopy = null;
             string onnxPath = null;
 
@@ -3952,7 +3916,7 @@ namespace SmartLabelingApp
                     if (exit != 0)
                         throw new Exception($"YOLO 학습 프로세스가 실패했습니다. (exit={exit})");
 
-                    // 에폭 종료 후 남은 4%를 산출물 수집/복사에 사용
+
                     overlay2.Report(98, "결과 수집...");
                     if (!File.Exists(bestOut))
                         throw new Exception($"best.pt를 찾을 수 없습니다.\n경로: {bestOut}");
@@ -3978,7 +3942,7 @@ namespace SmartLabelingApp
                 }
             }
 
-            // =====[ STEP 5) ONNX 내보내기 ]============================================
+
             if (!string.IsNullOrEmpty(bestCopy) && File.Exists(bestCopy))
             {
                 using (var ov = new ProgressOverlay(this, "Export: ONNX", true))
@@ -4037,7 +4001,7 @@ namespace SmartLabelingApp
                 }
             }
 
-            // =====[ 완료 안내 ]========================================================
+
             {
                 var msg = "학습이 완료되었습니다.\n\n" +
                           $"runs 경로: {Path.Combine(projectDir, runName)}" +
@@ -4056,7 +4020,7 @@ namespace SmartLabelingApp
             }
         }
 
-        // C# 7.3 호환, 간단 프로브 함수
+
         private static bool ProbeYoloTaskIsSegment(string pythonExe, string modelPath, string workdir)
         {
             try
@@ -4080,12 +4044,11 @@ namespace SmartLabelingApp
         }
 
 
-        /// <summary>닫힌 폴리곤(시작=끝이 아니어도 됨)을 둘레 길이 균등으로 target개 리샘플.</summary>
         private static List<PointF> ResampleClosedByArcLen(List<PointF> closed, int target)
         {
             if (closed == null || closed.Count < 3) return closed ?? new List<PointF>();
             var poly = new List<PointF>(closed);
-            if (poly[0] != poly[poly.Count - 1]) poly.Add(poly[0]); // 닫기
+            if (poly[0] != poly[poly.Count - 1]) poly.Add(poly[0]);
 
             int n = poly.Count;
             var cum = new double[n];
@@ -4122,7 +4085,7 @@ namespace SmartLabelingApp
             return outPts;
         }
 
-        /// <summary>GraphicsPath에서 가장 큰 폐곡선(외곽)만 추출, 시작=끝 제거.</summary>
+
         private static List<PointF> GetLargestClosedOutline(GraphicsPath gp)
         {
             if (gp == null) return null;
@@ -4152,7 +4115,7 @@ namespace SmartLabelingApp
                         for (int k = 0; k < len; k++) seg.Add(pts[start + k]);
                         if (seg[0] != seg[seg.Count - 1]) seg.Add(seg[0]);
 
-                        // 면적
+
                         double area = 0;
                         for (int a = 0, b = seg.Count - 1; a < seg.Count; b = a++)
                             area += (double)(seg[b].X * seg[a].Y - seg[a].X * seg[b].Y);
@@ -4167,14 +4130,14 @@ namespace SmartLabelingApp
             return best;
         }
 
-        /// <summary>라인 한 줄 추가. 폴리곤 정리(CCW/중복/정규화). 성공 시 true.</summary>
+
         private static bool AppendSegLine(List<string> lines, int cls, IList<PointF> ptsImg, int W, int H, IFormatProvider ci)
         {
             if (ptsImg == null || ptsImg.Count < 3) return false;
 
             var poly = new List<PointF>(ptsImg);
 
-            // 닫힘점 제거
+
             if (poly.Count >= 2)
             {
                 var a = poly[0]; var b = poly[poly.Count - 1];
@@ -4184,7 +4147,7 @@ namespace SmartLabelingApp
             RemoveConsecutiveDuplicates(poly);
             if (poly.Count < 3) return false;
 
-            // CCW 통일
+
             if (SignedArea(poly) < 0) poly.Reverse();
 
             var sb = new System.Text.StringBuilder();
@@ -4198,7 +4161,7 @@ namespace SmartLabelingApp
             lines.Add(sb.ToString());
             return true;
         }
-        // ===== end helpers =====
+
 
         private void WriteYoloLabelForCurrentImage(string labelFilePath, List<string> classes)
         {
@@ -4206,10 +4169,10 @@ namespace SmartLabelingApp
             int W = img.Width, H = img.Height;
             var ci = System.Globalization.CultureInfo.InvariantCulture;
 
-            // 설정값
+
             int CIRCLE_SAMPLES_DEFAULT = Math.Max(8, EditorUIConfig.CircleSegVertexCount);
-            int BRUSH_MAX_PTS = 256;  // 브러시 외곽 폴리곤 최대 정점 수
-            int POLY_MAX_PTS = 512;  // 폴리곤 상한(초과 시 인덱스 다운샘플)
+            int BRUSH_MAX_PTS = 256;
+            int POLY_MAX_PTS = 512;
 
             var lines = new List<string>();
 
@@ -4219,7 +4182,7 @@ namespace SmartLabelingApp
                 string lbl = GetShapeLabel(s);
                 int cls = GetOrAppendClassId(lbl, classes);
 
-                // Rectangle → 4점 폴리곤
+
                 if (s is RectangleShape rs)
                 {
                     var r = rs.RectImg;
@@ -4235,7 +4198,7 @@ namespace SmartLabelingApp
                     continue;
                 }
 
-                // Circle → 정다각형 근사 (편집 VertexCount 우선)
+
                 if (s is CircleShape cs)
                 {
                     var r = cs.RectImg;
@@ -4249,7 +4212,7 @@ namespace SmartLabelingApp
                     var pts = new List<PointF>(n);
                     for (int k = 0; k < n; k++)
                     {
-                        double th = 2.0 * Math.PI * k / n; // CCW
+                        double th = 2.0 * Math.PI * k / n;
                         pts.Add(new PointF(
                             cx + (float)(rad * Math.Cos(th)),
                             cy + (float)(rad * Math.Sin(th))
@@ -4259,7 +4222,7 @@ namespace SmartLabelingApp
                     continue;
                 }
 
-                // Triangle / Polygon → 꼭짓점 그대로 (상한 초과 시 다운샘플)
+
                 if (s is TriangleShape ts && ts.PointsImg != null && ts.PointsImg.Count >= 3)
                 {
                     var pts = ts.PointsImg;
@@ -4275,7 +4238,7 @@ namespace SmartLabelingApp
                     continue;
                 }
 
-                // BrushStroke → 외곽(가장 큰 폐곡선)을 호길이 균등 리샘플 후 저장
+
                 if (s is BrushStrokeShape bs)
                 {
                     using (var gp = bs.GetAreaPathImgClone())
@@ -4291,7 +4254,7 @@ namespace SmartLabelingApp
                     continue;
                 }
 
-                // 기타 → bbox를 4점 폴리곤으로 저장(세그 형식 일관)
+
                 var b = s.GetBoundsImg();
                 if (!b.IsEmpty)
                 {
@@ -4309,7 +4272,6 @@ namespace SmartLabelingApp
             System.IO.File.WriteAllLines(labelFilePath, lines, System.Text.Encoding.ASCII);
         }
 
-
         private int GetOrAppendClassId(string label, List<string> classes)
         {
             if (string.IsNullOrWhiteSpace(label)) label = "Default";
@@ -4324,7 +4286,7 @@ namespace SmartLabelingApp
 
         private string GetShapeLabel(object shape)
         {
-            // 도형에 LabelName 또는 Name 속성이 있는 구조(현재 베이스와 일치)
+
             var t = shape.GetType();
             var p = t.GetProperty("LabelName") ?? t.GetProperty("Name");
             if (p != null)
@@ -4336,7 +4298,6 @@ namespace SmartLabelingApp
         }
 
         #endregion
-
         private void MainForm_FormClosed(object sender, FormClosedEventArgs e)
         {
             if (_aiRainbowBg != null) { _aiRainbowBg.Dispose(); _aiRainbowBg = null; }
