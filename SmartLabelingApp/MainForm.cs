@@ -29,11 +29,9 @@ namespace SmartLabelingApp
         private string _currentModelName = "UNKNOWN";
         private System.Threading.CancellationTokenSource _autoInferCts;
 
-
         private const int MODEL_HEADER_H = 39;
         private const int MODEL_HEADER_Y = -43;
         private const int MODEL_HEADER_GAP = 4;
-
 
         private const int HOTKEY_PANEL_X = -4;
         private const int HOTKEY_PANEL_Y = -46;
@@ -73,7 +71,7 @@ namespace SmartLabelingApp
         private const int ACTION3_GAP = 8;
 
 
-        private const int FRAME_X = 205;
+        private const int FRAME_X = 207;
         private const int FRAME_X_OFFSET = 85;
         private const int FRAME_Y = 46;
         private const int FRAME_Y_OFFSET = 200;
@@ -84,6 +82,15 @@ namespace SmartLabelingApp
 
         private const int VIEWER_MIN_W = 1024;
         private const int VIEWER_HORIZONTAL_MARGIN = 320;
+
+
+        private Guna2Panel _logPanel;
+        private ListBox _logListBox;
+
+        private const int LOG_X = 215;
+        private const int LOG_Y = 878;
+        private const int LOG_WIDTH = 1602;
+        private const int LOG_HEIGHT = 193;
 
 
         private int VIEWER_MAX_W =>
@@ -116,10 +123,10 @@ namespace SmartLabelingApp
             new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff" };
 
+        private Bitmap _sourceImage;
+
         #endregion
         #region 2) UI Components (컨트롤/뷰 구성요소)
-
-
         private Guna.UI2.WinForms.Guna2Panel _hotkeyPanel;
         private System.Windows.Forms.Label _hotkeyLabel;
 
@@ -1021,9 +1028,53 @@ namespace SmartLabelingApp
             );
 
             LoadLastExportZipPath();
+            CreateLogPanel();
         }
         #endregion
         #region 5) UI Helpers (유틸/파일/레이아웃 보조)
+
+        private void CreateLogPanel()
+        {
+            _logPanel = new Guna.UI2.WinForms.Guna2Panel
+            {
+                BorderRadius = HOTKEY_PANEL_RADIUS,
+                FillColor = HOTKEY_PANEL_FILL,
+                BorderColor = HOTKEY_PANEL_BORDER,
+                BorderThickness = 2,
+                BackColor = Color.Transparent,
+                Location = new Point(LOG_X, LOG_Y),
+                Size = new Size(LOG_WIDTH, LOG_HEIGHT),
+                ShadowDecoration = { Parent = _logPanel }
+            };
+
+            _logListBox = new ListBox
+            {
+                Location = new Point(5, 5), // 패널 내부 여백
+                Size = new Size(LOG_WIDTH - 10, LOG_HEIGHT - 10), // 패널 크기보다 작게
+                BorderStyle = BorderStyle.None,
+                Font = new Font("Segoe UI", 9f, FontStyle.Regular),
+                BackColor = HOTKEY_PANEL_FILL,
+                ForeColor = Color.Black
+            };
+
+            _logPanel.Controls.Add(_logListBox);
+            this.Controls.Add(_logPanel);
+            _logPanel.BringToFront();
+        }
+        private void AddLog(string message)
+        {
+            if (_logListBox.InvokeRequired)
+            {
+                _logListBox.Invoke(new Action<string>(AddLog), message);
+                return;
+            }
+
+            string timestamp = DateTime.Now.ToString("HH:mm:ss");
+            _logListBox.Items.Add($"[{timestamp}] {message}");
+            _logListBox.TopIndex = _logListBox.Items.Count - 1;
+        }
+
+
         private async Task TryAutoLoadDefaultModelAsync()
         {
 
@@ -2788,7 +2839,7 @@ namespace SmartLabelingApp
                 Bitmap overlayed = null;
                 string titleSuffix = null;
 
-                using (var srcCopy = (Bitmap)_canvas.Image.Clone())
+                using (var srcCopy = (Bitmap)_sourceImage.Clone())
                 {
                     await Task.Run(() =>
                     {
@@ -2796,9 +2847,13 @@ namespace SmartLabelingApp
 
 
                         var res = YoloSegOnnx.Infer(_onnxSession, srcCopy);
-                        if (token.IsCancellationRequested) return;
-
+                        var swOverlay = System.Diagnostics.Stopwatch.StartNew();
                         overlayed = YoloSegOnnx.Overlay(srcCopy, res);
+                        swOverlay.Stop();
+
+                        AddLog($"Inference 완료: {res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms, overlay={swOverlay.Elapsed.TotalMilliseconds:F0}ms");
+                        AddLog($"총합 ≈ {(res.PreMs + res.InferMs + res.PostMs + swOverlay.Elapsed.TotalMilliseconds):F0}ms");
+
                         titleSuffix = res.TitleSuffix;
                     }, token);
                 }
@@ -3142,24 +3197,28 @@ namespace SmartLabelingApp
         {
             try
             {
+                _sourceImage?.Dispose();
+
                 using (var temp = Image.FromFile(path))
                 {
-                    var bmp = new Bitmap(temp);
-                    _canvas.LoadImage(bmp);
-                    _canvas.ZoomToFit();
-                    _currentImagePath = path;
-                    if (!_canvas.Focused) _canvas.Focus();
-                    _canvasLayer.Invalidate();
-                    _yoloLoadedForCurrentImage = false;
-                    TryBindAnnotationRootNear(Path.GetDirectoryName(_currentImagePath));
-                    _yoloLoadedForCurrentImage = TryLoadYoloForCurrentImage();
+                    _sourceImage = new Bitmap(temp);
+                }
 
+                var viewBmp = (Bitmap)_sourceImage.Clone();
+                _canvas.LoadImage(viewBmp);
+                _canvas.ZoomToFit();
 
-                    if (_aiSubMode == AiSubMode.Roi)
-                    {
-                        var ai = _canvas.GetTool(ToolMode.AI) as AITool;
-                        ai?.EnsureRoiForCurrentImage(_canvas, _lastRoiNorm);
-                    }
+                _currentImagePath = path;
+                if (!_canvas.Focused) _canvas.Focus();
+                _canvasLayer.Invalidate();
+                _yoloLoadedForCurrentImage = false;
+                TryBindAnnotationRootNear(Path.GetDirectoryName(_currentImagePath));
+                _yoloLoadedForCurrentImage = TryLoadYoloForCurrentImage();
+
+                if (_aiSubMode == AiSubMode.Roi)
+                {
+                    var ai = _canvas.GetTool(ToolMode.AI) as AITool;
+                    ai?.EnsureRoiForCurrentImage(_canvas, _lastRoiNorm);
                 }
 
                 BeginInvoke(new Action(() =>
@@ -3173,6 +3232,7 @@ namespace SmartLabelingApp
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
+
 
 
         private bool IsImageNode(TreeNode n)
@@ -3664,14 +3724,17 @@ namespace SmartLabelingApp
                 Bitmap overlayed = null;
                 string titleSuffix = null;
 
-                using (var srcCopy = (Bitmap)_canvas.Image.Clone())
+                using (var srcCopy = (Bitmap)_sourceImage.Clone())
                 {
                     await Task.Run(() =>
                     {
-
                         var res = YoloSegOnnx.Infer(_onnxSession, srcCopy);
-
+                        var swOverlay = System.Diagnostics.Stopwatch.StartNew();
                         overlayed = YoloSegOnnx.Overlay(srcCopy, res);
+                        swOverlay.Stop();
+
+                        AddLog($"Inference 완료: {res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms, overlay={swOverlay.Elapsed.TotalMilliseconds:F0}ms");
+                        AddLog($"총합 ≈ {(res.PreMs + res.InferMs + res.PostMs + swOverlay.Elapsed.TotalMilliseconds):F0}ms");
 
                         titleSuffix = res.TitleSuffix;
                     });
