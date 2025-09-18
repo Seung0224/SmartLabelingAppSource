@@ -25,6 +25,8 @@ namespace SmartLabelingApp
         #endregion
 
         #region 1) Constants & Static Data (상수/정적 데이터)
+        // 모델 자동 로드 기본 경로
+        private const string DEFAULT_MODEL_PATH = @"D:\SLA_Model\SEG.onnx";
         private string _currentModelName = "UNKNOWN";
         private System.Threading.CancellationTokenSource _autoInferCts;
 
@@ -811,6 +813,9 @@ namespace SmartLabelingApp
             _leftDock.Controls.Add(leftContent);
             CreateModelHeaderPanel("UNKNOWN");
             UpdateModelDependentControls();
+
+            this.Shown += async (s, e) => await TryAutoLoadDefaultModelAsync();
+            
             leftContent.Controls.Add(_fileTree);
             _leftRail.Controls.Add(_leftDock);
             _leftRail.BringToFront();
@@ -1029,6 +1034,45 @@ namespace SmartLabelingApp
         #endregion
 
         #region 5) UI Helpers (유틸/파일/레이아웃 보조)
+        private async Task TryAutoLoadDefaultModelAsync()
+        {
+            // 기본 경로 상수: private const string DEFAULT_MODEL_PATH = @"D:\SLA_Model\SEG.onnx";
+            var path = DEFAULT_MODEL_PATH;
+
+            // 모델 파일 없으면 UNKNOWN 유지
+            if (string.IsNullOrWhiteSpace(path) || !System.IO.File.Exists(path))
+            {
+                _onnxSession = null;
+                SetModelHeader("UNKNOWN");      // DL Model : UNKNOWN + 버튼 상태 갱신
+                return;
+            }
+
+            try
+            {
+                using (var overlay = new ProgressOverlay(this, "모델 준비 중…"))
+                {
+                    var progress = new Progress<(int, string)>(p => overlay.Report(p.Item1, p.Item2));
+
+                    // EnsureSession이 내부에서 단계별 ReportStep을 호출해 진행률을 쪼개서 보고함
+                    var newSession = await Task.Run(() =>
+                        SmartLabelingApp.YoloSegOnnx.EnsureSession(path, progress));
+
+                    // 기존 세션 정리 후 교체
+                    var old = _onnxSession;
+                    _onnxSession = newSession;
+                    old?.Dispose();
+
+                    // 헤더/버튼 상태 갱신
+                    SetModelHeader(System.IO.Path.GetFileName(path));  // DL Model : SEG.onnx
+                }
+            }
+            catch
+            {
+                _onnxSession = null;
+                SetModelHeader("UNKNOWN");
+            }
+        }
+
 
         private void CreateModelHeaderPanel(string initialName)
         {
@@ -2774,20 +2818,10 @@ namespace SmartLabelingApp
                         if (token.IsCancellationRequested) return;
 
                         // Infer → Overlay
-                        var res = YoloSegOnnx.Infer(
-                            _onnxSession, srcCopy,
-                            conf: 0.6f, iou: 0.45f,
-                            minBoxAreaRatio: 0.002f,
-                            minMaskAreaRatio: 0.0008f,
-                            discardTouchingBorder: true
-                        );
+                        var res = YoloSegOnnx.Infer(_onnxSession, srcCopy);
                         if (token.IsCancellationRequested) return;
 
-                        overlayed = YoloSegOnnx.Overlay(
-                            srcCopy, res,
-                            maskThr: 0.6f, alpha: 0.45f,
-                            drawBoxes: false, drawScores: true
-                        );
+                        overlayed = YoloSegOnnx.Overlay(srcCopy, res);
                         titleSuffix = res.TitleSuffix;
                     }, token);
                 }
@@ -3664,9 +3698,9 @@ namespace SmartLabelingApp
                     await Task.Run(() =>
                     {
                         // 1) 추론
-                        var res = YoloSegOnnx.Infer(_onnxSession, srcCopy, conf: 0.6f, iou: 0.45f, minBoxAreaRatio: 0.002f, minMaskAreaRatio: 0.0008f, discardTouchingBorder: true);
+                        var res = YoloSegOnnx.Infer(_onnxSession, srcCopy);
                         // 2) 오버레이
-                        overlayed = YoloSegOnnx.Overlay(srcCopy, res, maskThr: 0.6f, alpha: 0.45f, drawBoxes: false, drawScores: true);
+                        overlayed = YoloSegOnnx.Overlay(srcCopy, res);
 
                         titleSuffix = res.TitleSuffix;
                     });

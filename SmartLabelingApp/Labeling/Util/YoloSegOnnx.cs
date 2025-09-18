@@ -104,11 +104,11 @@ namespace SmartLabelingApp
         public static SegResult Infer(
     InferenceSession session,
     Bitmap orig,
-    float conf = 0.25f,
+    float conf = 0.9f,
     float iou = 0.45f,
-    float minBoxAreaRatio = 0f,
-    float minMaskAreaRatio = 0f,
-    bool discardTouchingBorder = false)
+    float minBoxAreaRatio = 0.003f,
+    float minMaskAreaRatio = 0.003f,
+    bool discardTouchingBorder = true)
         {
             Log("Infer(session, bitmap) called");
 
@@ -309,7 +309,7 @@ namespace SmartLabelingApp
         public static Bitmap Overlay(
             Bitmap orig,
             SegResult r,
-            float maskThr = 0.5f,
+            float maskThr = 0.65f,
             float alpha = 0.45f,
             bool drawBoxes = false,
             bool drawScores = true)
