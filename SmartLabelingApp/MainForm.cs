@@ -20,6 +20,16 @@ namespace SmartLabelingApp
     public partial class MainForm : Form
     {
         #region 1) Constants & Static Data (상수/정적 데이터)
+
+        // ---- Hotkey Panel (좌상단 안내)
+        private const int HOTKEY_PANEL_X = 0;
+        private const int HOTKEY_PANEL_Y = -46;
+        private const int HOTKEY_PANEL_W = 1600;
+        private const int HOTKEY_PANEL_H = 40;
+        private const int HOTKEY_PANEL_RADIUS = 8;
+        private static readonly Color HOTKEY_PANEL_FILL = Color.White;
+        private static readonly Color HOTKEY_PANEL_BORDER = Color.LightGray;
+
         // ---- 상단바(TopBar)
         private const int TOPBAR_H = 32;
         private const int PAD_V = 2;
@@ -36,7 +46,7 @@ namespace SmartLabelingApp
         private const int RIGHT_ICON_PAD = 2; // 슬롯 안쪽 여백(padding)
 
         private const int RIGHT_BAR1_H = 446; // 상단 아이콘바 높이
-        private const int RIGHT_BAR2_H = 292; // 라벨링 ADD 바 높이
+        private const int RIGHT_BAR2_H = 255; // 라벨링 ADD 바 높이
         private const int RIGHT_BAR_GAP = 4;  // 바 사이 여백
 
         // 바(SAVE) + 레이아웃 보정 상수
@@ -54,7 +64,7 @@ namespace SmartLabelingApp
         // ---- 프레임(Frame)
         private const int FRAME_X = 205;
         private const int FRAME_X_OFFSET = 85;
-        private const int FRAME_Y = 10;
+        private const int FRAME_Y = 46;
         private const int FRAME_Y_OFFSET = 5;
         private const int FRAME_W = 800;
         private const int FRAME_H = 547;
@@ -99,6 +109,11 @@ namespace SmartLabelingApp
         #endregion
 
         #region 2) UI Components (컨트롤/뷰 구성요소)
+
+        // Hotkey 안내 패널
+        private Guna.UI2.WinForms.Guna2Panel _hotkeyPanel;
+        private System.Windows.Forms.Label _hotkeyLabel;
+
         // 창 효과
         private readonly Guna2BorderlessForm _borderless;
         private readonly Guna2Elipse _elipse;
@@ -954,7 +969,9 @@ namespace SmartLabelingApp
                 if (_canvas != null && _canvas.Image != null)
                     _canvas.ZoomToFit();
             };
-            UpdateViewerBounds();
+
+            CreateHotkeyPanel();
+            UpdateViewerBounds(); 
 
             // ---- 레이아웃 이벤트
             _canvasHost.Resize += (s, e) => UpdateSideRailsLayout();
@@ -967,12 +984,86 @@ namespace SmartLabelingApp
 
             // 초기 하이라이트
             HighlightTool(_btnPointer, true, RIGHT_ICON_PX);
+            SetHotkeyPanelText(
+            // 1) 기존(콤마 구분) 한 줄
+            "Label | " +
+            "Ctrl+S: Labeling 저장, " +
+            "Ctrl+C: Labeling 복사, " +
+            "Ctrl+V: Labeling 붙여넣기, " +
+            "Ctrl+Z: Labeling 취소, " +
+            "Ctrl+Click: Labeling 그룹 선택, " +
+            "Ctrl+A: Labeling 전체 선택, " +
+            "Delete: Labeling 삭제, " +
+            "Shift+↑/↓: Labeling 선택 크기 확대/축소(균일 비율), " +
+            "←/→/↑/↓: Labeling 선택 이동, " +
+            "Ctrl+←/→/↑/↓: Labeling 선택 이동" +
+            "\n" +
+            "Canvas | " +
+            "Ctrl+↑ / Ctrl+↓: (영역 선택 없을 시) 이전 / 다음 이미지," +
+            "Enter: AI 프리폼 확정 (AI Tool 전용), " +
+            "Esc: AI 프리폼 취소 (AI Tool 전용), " +
+            "Ctrl+E: 폴더 일괄 라벨링 (AI ROI Tool 전용), " +
+            "Ctrl+D: ROI 즉시 분할 + 폴리곤 확정 (AI ROI Tool전용)"
+            );
 
             LoadLastExportZipPath();
         }
         #endregion
 
         #region 5) UI Helpers (유틸/파일/레이아웃 보조)
+        private void CreateHotkeyPanel()
+        {
+            if (_hotkeyPanel != null && !_hotkeyPanel.IsDisposed) return;
+
+            _hotkeyPanel = new Guna.UI2.WinForms.Guna2Panel
+            {
+                BorderRadius = HOTKEY_PANEL_RADIUS,
+                BorderThickness = 2,
+                BorderColor = HOTKEY_PANEL_BORDER,
+                FillColor = HOTKEY_PANEL_FILL,
+                BackColor = Color.Transparent
+            };
+
+            // 패널 부모: 캔버스와 같은 레이어에 올립니다.
+            _hotkeyPanel.Parent = _canvasLayer;
+            _hotkeyPanel.ShadowDecoration.Parent = _hotkeyPanel;
+
+            _hotkeyLabel = new System.Windows.Forms.Label
+            {
+                AutoSize = false,
+                Dock = DockStyle.Fill,
+                BackColor = Color.Transparent,
+                ForeColor = Color.Black,
+                Padding = new Padding(8, 6, 8, 6),
+                Font = new Font("Segoe UI", 9f, FontStyle.Regular),
+                TextAlign = ContentAlignment.TopLeft,
+                UseMnemonic = false, // & 문자 무시
+                Text = "Ctrl+S: Labeling 저장\nCtrl+A: 전체 선택"
+            };
+
+            _hotkeyPanel.Controls.Add(_hotkeyLabel);
+            _hotkeyPanel.BringToFront();
+        }
+
+        private void UpdateHotkeyPanelBounds()
+        {
+            if (_hotkeyPanel == null || _canvas == null) return;
+
+            _hotkeyPanel.SetBounds(
+                _canvas.Left + HOTKEY_PANEL_X,
+                _canvas.Top + HOTKEY_PANEL_Y,
+                HOTKEY_PANEL_W,
+                HOTKEY_PANEL_H
+            );
+
+            _hotkeyPanel.BringToFront(); // 다른 컨트롤 위로
+        }
+
+        private void SetHotkeyPanelText(string text)
+        {
+            if (_hotkeyLabel != null)
+                _hotkeyLabel.Text = text ?? string.Empty;
+        }
 
         private void OnToggleClick(object sender, EventArgs e)
         {
@@ -1476,6 +1567,8 @@ namespace SmartLabelingApp
             var r = GetFrameRect();
             var inner = Rectangle.Inflate(r, -FRAME_BORDER, -FRAME_BORDER);
             _canvas.Bounds = inner;
+
+            UpdateHotkeyPanelBounds();
         }
 
         private void UpdateSideRailsLayout()
