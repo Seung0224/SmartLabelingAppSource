@@ -20,11 +20,15 @@ namespace SmartLabelingApp
     public partial class MainForm : Form
     {
         #region 1) Constants & Static Data (상수/정적 데이터)
+        // ---- Left Model Header Panel
+        private const int MODEL_HEADER_H = 39;   // 헤더 패널 높이
+        private const int MODEL_HEADER_Y = -43; // _leftRail 내부 기준 Y (원하는 값으로 조절)
+        private const int MODEL_HEADER_GAP = 4;  // 모델 패널과 트리뷰 컨테이너(_leftDock) 사이 간격
 
         // ---- Hotkey Panel (좌상단 안내)
-        private const int HOTKEY_PANEL_X = 0;
+        private const int HOTKEY_PANEL_X = -4;
         private const int HOTKEY_PANEL_Y = -46;
-        private const int HOTKEY_PANEL_W = 1600;
+        private const int HOTKEY_PANEL_W = 1606;
         private const int HOTKEY_PANEL_H = 40;
         private const int HOTKEY_PANEL_RADIUS = 8;
         private static readonly Color HOTKEY_PANEL_FILL = Color.White;
@@ -134,6 +138,9 @@ namespace SmartLabelingApp
         // --- Add Vertex용 컨텍스트 상태 ---
         private ToolStripMenuItem _miAddVertex;    // 동적 추가되는 메뉴(폴리곤일 때만 표시)
         private System.Drawing.PointF _lastCtxImgPointImg; // 마지막 우클릭 이미지 좌표
+
+        private Guna2Panel _modelHeaderPanel;
+        private Label _modelHeaderLabel;
 
         // 우측 도크/툴바
         private Guna2Panel _rightRail;
@@ -739,7 +746,8 @@ namespace SmartLabelingApp
 
             _leftDock = new Guna2Panel
             {
-                Dock = DockStyle.Fill,
+                // Dock = DockStyle.Fill,   // ← 제거
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom,
                 Padding = new Padding(6, 8, 6, 8),
                 FillColor = Color.Transparent,
                 BackColor = Color.Transparent,
@@ -791,9 +799,10 @@ namespace SmartLabelingApp
 
             _fileTree.StateImageList = LabelStatusService.BuildStateImageList(LabelStatusService.BadgeStyle.Check, 16, 2);
             _fileTree.ShowNodeToolTips = true;
-
-            leftContent.Controls.Add(_fileTree);
+            
             _leftDock.Controls.Add(leftContent);
+            CreateModelHeaderPanel("TEST");     // ← 초기 표기: DL Model : TEST
+            leftContent.Controls.Add(_fileTree);
             _leftRail.Controls.Add(_leftDock);
             _leftRail.BringToFront();
 
@@ -1011,6 +1020,48 @@ namespace SmartLabelingApp
         #endregion
 
         #region 5) UI Helpers (유틸/파일/레이아웃 보조)
+
+        private void CreateModelHeaderPanel(string initialName)
+        {
+            if (_modelHeaderPanel != null && !_modelHeaderPanel.IsDisposed) return;
+
+            _modelHeaderPanel = new Guna.UI2.WinForms.Guna2Panel
+            {
+                // Dock = DockStyle.Top,   // ← 사용하지 않음
+                Parent = _leftRail,        // ← 부모를 _leftRail 로!
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+                Height = MODEL_HEADER_H,
+                BorderRadius = 8,
+                BorderThickness = 2,
+                BorderColor = Color.Silver,
+                FillColor = Color.FromArgb(235, 235, 240),
+                Padding = new Padding(8, 4, 8, 4),
+                BackColor = Color.Transparent
+            };
+
+            _modelHeaderLabel = new Label
+            {
+                AutoSize = false,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+                ForeColor = Color.Black,
+                BackColor = Color.Transparent
+            };
+            _modelHeaderPanel.Controls.Add(_modelHeaderLabel);
+
+            SetModelHeader(initialName);
+            _modelHeaderPanel.BringToFront();
+        }
+
+
+        private void SetModelHeader(string modelName)
+        {
+            string name = string.IsNullOrWhiteSpace(modelName) ? "UNKNOWN" : modelName.Trim();
+            if (_modelHeaderLabel != null)
+                _modelHeaderLabel.Text = $"DL Model : {name}";
+        }
+
         private void CreateHotkeyPanel()
         {
             if (_hotkeyPanel != null && !_hotkeyPanel.IsDisposed) return;
@@ -1647,9 +1698,34 @@ namespace SmartLabelingApp
                 AdjustLabelChipWidths();
             }
 
-            // 왼쪽 레일
             if (_leftRail != null)
+            {
                 _leftRail.Padding = new Padding(0, topPad - RIGHT_DOCK_T, 0, 2);
+
+                // === [추가] 모델 패널 수동 배치 (트리뷰 밖) ===
+                if (_modelHeaderPanel != null)
+                {
+                    int x = _leftRail.Padding.Left;
+                    int y = _leftRail.Padding.Top + MODEL_HEADER_Y; // ← 상수로 Y 제어
+                    int w = Math.Max(20, _leftRail.ClientSize.Width - _leftRail.Padding.Horizontal);
+                    int h = MODEL_HEADER_H;
+
+                    _modelHeaderPanel.SetBounds(x, y, w, h);
+                    _modelHeaderPanel.BringToFront();
+                }
+
+                // === [추가] 트리뷰 컨테이너(_leftDock)를 모델 패널 '아래'로 수동 배치 ===
+                if (_leftDock != null)
+                {
+                    int dockLeft = 0;
+                    int dockTop = (_modelHeaderPanel?.Bottom ?? _leftRail.Padding.Top) + MODEL_HEADER_GAP;
+                    int dockWidth = _leftRail.ClientSize.Width;
+                    int dockHeight = _leftRail.ClientSize.Height - dockTop - _leftRail.Padding.Bottom;
+
+                    if (dockHeight < 1) dockHeight = 1;
+                    _leftDock.SetBounds(dockLeft, dockTop, dockWidth, dockHeight);
+                }
+            }
 
             _canvasLayer.Invalidate();
         }
