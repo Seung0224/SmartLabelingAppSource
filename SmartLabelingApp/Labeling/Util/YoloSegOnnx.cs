@@ -6,6 +6,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 
@@ -62,19 +63,35 @@ namespace SmartLabelingApp
             }
         }
 
-        public class SegResult
+        public sealed class SegResult
         {
-            public Bitmap Overlayed;
-            public List<Det> Dets;
+            // 네트워크/리사이즈 관련(좌표 복원용)
+            public int NetSize { get; set; }           // ex) 640
+            public float Scale { get; set; }           // Letterbox scale
+            public int PadX { get; set; }              // Letterbox padX
+            public int PadY { get; set; }              // Letterbox padY
+            public Size Resized { get; set; }          // Letterbox resized size (w,h)
+            public Size OrigSize { get; set; }         // 원본 이미지 크기
 
-            public double SessionMs;  // 세션 초기화(DML/CPU) 시간
-            public double PreMs;      // 전처리 (letterbox+tensor)
-            public double InferMs;    // 추론 (session.Run)
-            public double PostMs;     // 후처리 (헤드 파싱, NMS 등)
-            public double OverlayMs;  // 오버레이 합성
-            public double TotalMs;    // 전체(함수 진입~종료)
+            // 출력(후처리) 결과
+            public List<Det> Dets { get; set; }        // 박스/클래스/점수/계수
+            public int SegDim { get; set; }            // t4 채널 수
+            public int MaskH { get; set; }             // proto H
+            public int MaskW { get; set; }             // proto W
 
-            public string TitleSuffix;
+            // 마스크 합성을 위한 중간데이터(필수)
+            // Proto는 [segDim, mh, mw]로 평탄화한 float[] (t4.ToArray())
+            public float[] ProtoFlat { get; set; }
+
+            // 타이밍
+            public double SessionMs { get; set; }
+            public double PreMs { get; set; }
+            public double InferMs { get; set; }
+            public double PostMs { get; set; }
+            public double TotalMs { get; set; }
+
+            // 부가 텍스트
+            public string TitleSuffix { get; set; }
         }
 
         public class Det
@@ -83,6 +100,291 @@ namespace SmartLabelingApp
             public float Score;
             public int ClassId;
             public float[] Coeff;    // seg_dim
+        }
+        public static SegResult Infer(
+    InferenceSession session,
+    Bitmap orig,
+    float conf = 0.25f,
+    float iou = 0.45f,
+    float minBoxAreaRatio = 0f,
+    float minMaskAreaRatio = 0f,
+    bool discardTouchingBorder = false)
+        {
+            Log("Infer(session, bitmap) called");
+
+            var sw = Stopwatch.StartNew();
+            double tSession = 0, tPrev = 0, tPre = 0, tInfer = 0, tPost = 0;
+
+            // 0) 세션/입력 메타
+            string inputName = session.InputMetadata.Keys.First();
+            var inMeta = session.InputMetadata[inputName];
+            Log($"Session OK. Input name: {inputName}");
+            try { Log($"Input dims: [{JoinDims(inMeta.Dimensions)}]"); } catch { }
+
+            int netH = 640, netW = 640;
+            try
+            {
+                var dims = inMeta.Dimensions; // [N,C,H,W] or [-1,3,-1,-1]
+                if (dims.Length == 4)
+                {
+                    if (dims[2] > 0) netH = dims[2];
+                    if (dims[3] > 0) netW = dims[3];
+                }
+            }
+            catch { }
+            int netSize = Math.Max(netH, netW);
+            Log($"Chosen netSize: {netSize}");
+
+            // 1) 전처리
+            using (var boxed = Letterbox(orig, netSize, out float scale, out int padX, out int padY, out Size resized))
+            {
+                Log($"Letterbox: scale={scale:F6}, padX={padX}, padY={padY}, resized={resized.Width}x{resized.Height}");
+                var input = ToCHWTensor(boxed);
+                Log($"Input tensor ready: [1,3,{boxed.Height},{boxed.Width}]");
+
+                tPre = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
+
+                // 2) 추론
+                IDisposableReadOnlyCollection<DisposableNamedOnnxValue> outputs = null;
+                try
+                {
+                    var inputsList = new List<NamedOnnxValue>(1)
+            {
+                NamedOnnxValue.CreateFromTensor<float>(inputName, input)
+            };
+
+                    outputs = session.Run(inputsList);
+                    Log($"session.Run() returned {outputs.Count} outputs");
+
+                    tInfer = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
+
+                    for (int oi = 0; oi < outputs.Count; oi++)
+                    {
+                        try
+                        {
+                            var t = outputs.ElementAt(oi).AsTensor<float>();
+                            Log($"  out[{oi}] dims: [{JoinDims(t.Dimensions)}]");
+                        }
+                        catch { Log($"  out[{oi}] not a float tensor?"); }
+                    }
+
+                    // 3) 후처리(Det + Proto 확보) — 합성은 하지 않음
+                    var t3 = outputs.First(v => v.AsTensor<float>().Dimensions.Length == 3).AsTensor<float>();
+                    var t4 = outputs.First(v => v.AsTensor<float>().Dimensions.Length == 4).AsTensor<float>();
+
+                    var d3 = t3.Dimensions;    // [1,37,8400] or [1,8400,37]
+                    var d4 = t4.Dimensions;    // [1, segDim, mh, mw]
+                    int a = d3[1];
+                    int c = d3[2];
+
+                    int segDim = d4[1];
+                    int mh = d4[2];
+                    int mw = d4[3];
+
+                    bool channelsFirst = (a <= 512 && c >= 1000) || (a <= segDim + 4 + 256);
+                    int channels = channelsFirst ? a : c;
+                    int nPred = channelsFirst ? c : a;
+                    int feat = channels;
+
+                    int numClasses = feat - 4 - segDim;
+                    if (numClasses < 0)
+                    {
+                        channelsFirst = !channelsFirst;
+                        channels = channelsFirst ? a : c;
+                        nPred = channelsFirst ? c : a;
+                        feat = channels;
+                        numClasses = feat - 4 - segDim;
+                    }
+
+                    Log($"Parsed heads:");
+                    Log($"  det: channelsFirst={channelsFirst}, channels={channels}, nPred={nPred}, feat={feat}");
+                    Log($"  proto: segDim={segDim}, mh={mh}, mw={mw}");
+                    Log($"  numClasses={numClasses}");
+
+                    if (numClasses <= 0)
+                        throw new InvalidOperationException($"Invalid head layout. feat={feat}, segDim={segDim}");
+
+                    netSize = Math.Max(netSize, Math.Max(mh, mw) * 4);
+
+                    float coordScale = 1f;
+                    {
+                        int sample = Math.Min(nPred, 128);
+                        float maxWH = 0f;
+                        for (int i = 0; i < sample; i++)
+                        {
+                            float ww = channelsFirst ? t3[0, 2, i] : t3[0, i, 2];
+                            float hh = channelsFirst ? t3[0, 3, i] : t3[0, i, 3];
+                            if (ww > maxWH) maxWH = ww;
+                            if (hh > maxWH) maxWH = hh;
+                        }
+                        if (maxWH <= 3.5f) coordScale = netSize;
+                    }
+                    Log($"coordScale={coordScale:F6}");
+
+                    var dets = new List<Det>(256);
+                    for (int i = 0; i < nPred; i++)
+                    {
+                        float x = (channelsFirst ? t3[0, 0, i] : t3[0, i, 0]) * coordScale;
+                        float y = (channelsFirst ? t3[0, 1, i] : t3[0, i, 1]) * coordScale;
+                        float w = (channelsFirst ? t3[0, 2, i] : t3[0, i, 2]) * coordScale;
+                        float h = (channelsFirst ? t3[0, 3, i] : t3[0, i, 3]) * coordScale;
+
+                        int bestC = 0; float bestS = 0f;
+                        for (int cidx = 0; cidx < numClasses; cidx++)
+                        {
+                            float raw = channelsFirst
+                                ? t3[0, 4 + cidx, i]
+                                : t3[0, i, 4 + cidx];
+
+                            float s = (raw < 0f || raw > 1f) ? Sigmoid(raw) : raw;
+                            if (s > bestS) { bestS = s; bestC = cidx; }
+                        }
+                        if (bestS < conf) continue;
+
+                        var coeff = new float[segDim];
+                        int baseIdx = 4 + numClasses;
+                        for (int k = 0; k < segDim; k++)
+                        {
+                            coeff[k] = channelsFirst
+                                ? t3[0, baseIdx + k, i]
+                                : t3[0, i, baseIdx + k];
+                        }
+
+                        float l = x - w / 2f, t = y - h / 2f, r = x + w / 2f, btm = y + h / 2f;
+
+                        dets.Add(new Det
+                        {
+                            Box = new RectangleF(l, t, r - l, btm - t),
+                            Score = bestS,
+                            ClassId = bestC,
+                            Coeff = coeff
+                        });
+                    }
+                    Log($"Detections after conf filter: {dets.Count}");
+
+                    if (dets.Count > 0)
+                        dets = Nms(dets, iou);
+                    Log($"Detections after NMS (iou={iou}): {dets.Count}");
+
+                    tPost = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
+
+                    // Proto 보관 (합성 단계에서 사용)
+                    var protoFlat = t4.ToArray(); // [1, segDim, mh, mw] → 평탄화
+
+                    var res = new SegResult
+                    {
+                        NetSize = netSize,
+                        Scale = scale,
+                        PadX = padX,
+                        PadY = padY,
+                        Resized = resized,
+                        OrigSize = orig.Size,
+
+                        Dets = dets,
+                        SegDim = segDim,
+                        MaskH = mh,
+                        MaskW = mw,
+                        ProtoFlat = protoFlat,
+
+                        SessionMs = tSession,
+                        PreMs = tPre,
+                        InferMs = tInfer,
+                        PostMs = tPost,
+                        TotalMs = sw.Elapsed.TotalMilliseconds
+                    };
+
+                    res.TitleSuffix =
+                        $"session {res.SessionMs:F0}ms, pre {res.PreMs:F0}ms, infer {res.InferMs:F0}ms, post {res.PostMs:F0}ms, total {res.TotalMs:F0}ms";
+
+                    return res;
+                }
+                finally
+                {
+                    if (outputs != null) outputs.Dispose();
+                }
+            }
+        }
+
+        // === 완전 분리: 합성만 수행 (원본 + SegResult → 새 Bitmap 반환) ===
+        public static Bitmap Overlay(
+            Bitmap orig,
+            SegResult r,
+            float maskThr = 0.5f,
+            float alpha = 0.45f,
+            bool drawBoxes = false,
+            bool drawScores = true)
+        {
+            if (orig == null) throw new ArgumentNullException(nameof(orig));
+            if (r == null) throw new ArgumentNullException(nameof(r));
+
+            var over = new Bitmap(orig.Width, orig.Height, PixelFormat.Format32bppArgb);
+            using (var g = Graphics.FromImage(over))
+            {
+                g.DrawImage(orig, 0, 0, orig.Width, orig.Height);
+
+                if (r.Dets == null || r.Dets.Count == 0)
+                    return over;
+
+                // proto accessor
+                int segDim = r.SegDim;
+                int mh = r.MaskH, mw = r.MaskW;
+                var proto = r.ProtoFlat; // 길이 = segDim * mh * mw
+                Func<int, int, int, float> ProtoAt = (k, y, x) => proto[(k * mh + y) * mw + x];
+
+                int di = 0;
+                foreach (var d in r.Dets)
+                {
+                    // 1) coeff ⋅ proto → mask(mh×mw), sigmoid
+                    var mask = new float[mh * mw];
+                    for (int yy = 0; yy < mh; yy++)
+                    {
+                        int rowOff = yy * mw;
+                        for (int xx = 0; xx < mw; xx++)
+                        {
+                            float v = 0f;
+                            for (int k = 0; k < segDim; k++)
+                                v += d.Coeff[k] * ProtoAt(k, yy, xx);
+                            mask[rowOff + xx] = Sigmoid(v);
+                        }
+                    }
+
+                    // 2) 네트 좌표 → 원본 좌표로 업샘플/크롭/리사이즈
+                    using (var maskBmp = FloatMaskToBitmap(mask, mw, mh))
+                    using (var up = ResizeBitmap(maskBmp, r.NetSize, r.NetSize))
+                    {
+                        int cx = Clamp(r.PadX, 0, up.Width);
+                        int cy = Clamp(r.PadY, 0, up.Height);
+                        int cw = Math.Min(r.Resized.Width, up.Width - cx);
+                        int ch = Math.Min(r.Resized.Height, up.Height - cy);
+                        if (cw <= 0 || ch <= 0) { di++; continue; }
+
+                        using (var cropped = CropBitmap(up, new Rectangle(cx, cy, cw, ch)))
+                        using (var toOrig = ResizeBitmap(cropped, orig.Width, orig.Height))
+                        {
+                            var boxOrig = NetBoxToOriginal(d.Box, r.Scale, r.PadX, r.PadY, r.Resized, r.OrigSize);
+                            ZeroOutsideRect(toOrig, boxOrig);
+
+                            var color = ClassColor(d.ClassId);
+                            AlphaBlendMask(over, toOrig, color, maskThr, alpha);
+
+                            byte thrByte = (byte)(maskThr * 255f + 0.5f);
+                            DrawMaskOutline(toOrig, g, color, 2, thrByte);
+
+                            if (drawBoxes)
+                            {
+                                using (var pen = new Pen(color, 2))
+                                    g.DrawRectangle(pen, boxOrig);
+                            }
+                            if (drawScores)
+                            {
+                                DrawLabel(g, boxOrig, $"{d.Score:0.00}", color);
+                            }
+                        }
+                    }
+                    di++;
+                }
+            }
+            return over;
         }
 
         private static void DrawLabel(Graphics g, Rectangle anchor, string text, Color boxColor)
@@ -111,314 +413,76 @@ namespace SmartLabelingApp
             }
         }
 
-        // ============ 메인 ============
-        public static SegResult InferAndOverlay(
-            string onnxPath,
-            string imagePath,
-            float conf = 0.25f,
-            float iou = 0.45f,
-            float maskThr = 0.5f,
-            float alpha = 0.45f,
-            int maxInstances = -1,
-            float minBoxAreaRatio = 0f,
-            float minMaskAreaRatio = 0f,
-            bool discardTouchingBorder = false,
-            bool drawBoxes = false,
-            bool drawScores = true
-        )
+        // 진행률 헬퍼: 퍼센트 상승만 허용
+        private static void ReportStep(IProgress<(int percent, string status)> progress, ref int cur, int next, string msg)
         {
-            Log("InferAndOverlay() called");
-            Log($"  Model:  {onnxPath}");
-            Log($"  Image:  {imagePath}");
-            Log($"  Params: conf={conf}, iou={iou}, maskThr={maskThr}, alpha={alpha}");
-
-            var sw = Stopwatch.StartNew();
-            double tSession = 0, tPrev = 0, tPre = 0, tInfer = 0, tPost = 0, tOverlay = 0;
-
-            using (var orig = (Bitmap)Image.FromFile(imagePath))
-            {
-                // ===== 세션 (TensorRT → CUDA → DML → CPU) =====
-                var session = GetOrCreateSession(onnxPath, out tSession);
-
-                // 세션 초기화 이후
-                tSession = sw.Elapsed.TotalMilliseconds;
-                tPrev = sw.Elapsed.TotalMilliseconds;
-
-                string inputName = session.InputMetadata.Keys.First();
-                var inMeta = session.InputMetadata[inputName];
-                Log($"Session OK. Input name: {inputName}");
-                try { Log($"Input dims: [{JoinDims(inMeta.Dimensions)}]"); } catch { }
-
-                int netH = 640, netW = 640;
-                try
-                {
-                    var dims = inMeta.Dimensions; // [N,C,H,W] or [-1,3,-1,-1]
-                    if (dims.Length == 4)
-                    {
-                        if (dims[2] > 0) netH = dims[2];
-                        if (dims[3] > 0) netW = dims[3];
-                    }
-                }
-                catch { }
-                int netSize = Math.Max(netH, netW);
-                Log($"Chosen netSize: {netSize}");
-
-                // 딥러닝 모델에 맞게 리사이즈 + 패딩 하고 텐서로 변환
-                using (var boxed = Letterbox(orig, netSize, out float scale, out int padX, out int padY, out Size resized))
-                {
-                    Log($"Letterbox: scale={scale:F6}, padX={padX}, padY={padY}, resized={resized.Width}x{resized.Height}");
-                    var input = ToCHWTensor(boxed);
-                    Log($"Input tensor ready: [1,3,{boxed.Height},{boxed.Width}]");
-
-                    tPre = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
-
-                    IDisposableReadOnlyCollection<DisposableNamedOnnxValue> outputs = null;
-                    try
-                    {
-                        var inputsList = new List<NamedOnnxValue>(1)
-                        {
-                            NamedOnnxValue.CreateFromTensor<float>(inputName, input)
-                        };
-
-                        outputs = session.Run(inputsList);
-
-                        // t3 (3차원): 디텍션 헤드 → 박스, 클래스 점수, 마스크 계수 outputs
-                        // t4 (4차원): 프로토타입 마스크(Proto) → 마스크 기저 이미지들의 묶음
-                        // t3과 t4를 합쳐셔 오버레이를 그림
-
-                        // 이 뒤로 값이 픽셀의 위치나 값들이 정규화된 값이기때문에 다시 원래 이미지 좌표로 돌리기위해 원래 픽셀값으로 돌림
-                        // NMS: IoU 기준으로 겹치는 박스를 제거하여 중복 제거
-
-                        Log($"session.Run() returned {outputs.Count} outputs");
-
-                        tInfer = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
-
-                        for (int oi = 0; oi < outputs.Count; oi++)
-                        {
-                            try
-                            {
-                                var t = outputs.ElementAt(oi).AsTensor<float>();
-                                Log($"  out[{oi}] dims: [{JoinDims(t.Dimensions)}]");
-                            }
-                            catch { Log($"  out[{oi}] not a float tensor?"); }
-                        }
-
-                        var t3 = outputs.First(v => v.AsTensor<float>().Dimensions.Length == 3).AsTensor<float>();
-                        var t4 = outputs.First(v => v.AsTensor<float>().Dimensions.Length == 4).AsTensor<float>();
-
-                        var d3 = t3.Dimensions;    // [1,37,8400] or [1,8400,37]
-                        var d4 = t4.Dimensions;    // [1, segDim, mh, mw]
-                        int a = d3[1];
-                        int c = d3[2];
-
-                        int segDim = d4[1];
-                        int mh = d4[2];
-                        int mw = d4[3];
-
-                        bool channelsFirst = (a <= 512 && c >= 1000) || (a <= segDim + 4 + 256);
-                        int channels = channelsFirst ? a : c;
-                        int nPred = channelsFirst ? c : a;
-                        int feat = channels;
-
-                        int numClasses = feat - 4 - segDim;
-                        if (numClasses < 0)
-                        {
-                            channelsFirst = !channelsFirst;
-                            channels = channelsFirst ? a : c;
-                            nPred = channelsFirst ? c : a;
-                            feat = channels;
-                            numClasses = feat - 4 - segDim;
-                        }
-
-                        Log($"Parsed heads:");
-                        Log($"  det: channelsFirst={channelsFirst}, channels={channels}, nPred={nPred}, feat={feat}");
-                        Log($"  proto: segDim={segDim}, mh={mh}, mw={mw}");
-                        Log($"  numClasses={numClasses}");
-
-                        if (numClasses <= 0)
-                            throw new InvalidOperationException($"Invalid head layout. feat={feat}, segDim={segDim}");
-
-                        netSize = Math.Max(netSize, Math.Max(mh, mw) * 4);
-
-                        float coordScale = 1f;
-                        {
-                            int sample = Math.Min(nPred, 128);
-                            float maxWH = 0f;
-                            for (int i = 0; i < sample; i++)
-                            {
-                                float ww = channelsFirst ? t3[0, 2, i] : t3[0, i, 2];
-                                float hh = channelsFirst ? t3[0, 3, i] : t3[0, i, 3];
-                                if (ww > maxWH) maxWH = ww;
-                                if (hh > maxWH) maxWH = hh;
-                            }
-                            if (maxWH <= 3.5f) coordScale = netSize;
-                        }
-                        Log($"coordScale={coordScale:F6}");
-
-                        var dets = new List<Det>(256);
-                        for (int i = 0; i < nPred; i++)
-                        {
-                            float x = (channelsFirst ? t3[0, 0, i] : t3[0, i, 0]) * coordScale;
-                            float y = (channelsFirst ? t3[0, 1, i] : t3[0, i, 1]) * coordScale;
-                            float w = (channelsFirst ? t3[0, 2, i] : t3[0, i, 2]) * coordScale;
-                            float h = (channelsFirst ? t3[0, 3, i] : t3[0, i, 3]) * coordScale;
-
-                            int bestC = 0; float bestS = 0f;
-                            for (int cidx = 0; cidx < numClasses; cidx++)
-                            {
-                                float raw = channelsFirst
-                                    ? t3[0, 4 + cidx, i]
-                                    : t3[0, i, 4 + cidx];
-
-                                float s = (raw < 0f || raw > 1f) ? Sigmoid(raw) : raw;
-                                if (s > bestS) { bestS = s; bestC = cidx; }
-                            }
-                            if (bestS < conf) continue;
-
-                            var coeff = new float[segDim];
-                            int baseIdx = 4 + numClasses;
-                            for (int k = 0; k < segDim; k++)
-                            {
-                                coeff[k] = channelsFirst
-                                    ? t3[0, baseIdx + k, i]
-                                    : t3[0, i, baseIdx + k];
-                            }
-
-                            float l = x - w / 2f, t = y - h / 2f, r = x + w / 2f, btm = y + h / 2f;
-
-                            dets.Add(new Det
-                            {
-                                Box = new RectangleF(l, t, r - l, btm - t),
-                                Score = bestS,
-                                ClassId = bestC,
-                                Coeff = coeff
-                            });
-                        }
-                        Log($"Detections after conf filter: {dets.Count}");
-                        if (dets.Count == 0)
-                        {
-                            tPost = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
-                            var empty = new SegResult
-                            {
-                                Overlayed = (Bitmap)orig.Clone(),
-                                Dets = dets,
-                                SessionMs = tSession,
-                                PreMs = tPre,
-                                InferMs = tInfer,
-                                PostMs = tPost,
-                                OverlayMs = 0,
-                                TotalMs = sw.Elapsed.TotalMilliseconds
-                            };
-                            empty.TitleSuffix =
-                                $"session {empty.SessionMs:F0}ms, pre {empty.PreMs:F0}ms, infer {empty.InferMs:F0}ms, post {empty.PostMs:F0}ms, overlay {empty.OverlayMs:F0}ms, total {empty.TotalMs:F0}ms";
-                            return empty;
-                        }
-
-                        dets = Nms(dets, iou);
-                        Log($"Detections after NMS (iou={iou}): {dets.Count}");
-
-                        tPost = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
-
-                        var proto = t4.ToArray(); // [1,segDim,mh,mw]
-                        Func<int, int, int, float> ProtoAt = (k, y, x) => proto[(k * mh + y) * mw + x];
-
-                        var over = new Bitmap(orig.Width, orig.Height, PixelFormat.Format32bppArgb);
-                        using (var g = Graphics.FromImage(over))
-                        {
-                            g.DrawImage(orig, 0, 0, orig.Width, orig.Height);
-
-                            int di = 0;
-                            foreach (var d in dets)
-                            {
-                                var mask = new float[mh * mw];
-                                for (int yy = 0; yy < mh; yy++)
-                                {
-                                    int rowOff = yy * mw;
-                                    for (int xx = 0; xx < mw; xx++)
-                                    {
-                                        float v = 0f;
-                                        for (int k = 0; k < segDim; k++)
-                                            v += d.Coeff[k] * ProtoAt(k, yy, xx);
-                                        mask[rowOff + xx] = Sigmoid(v);
-                                    }
-                                }
-
-                                using (var maskBmp = FloatMaskToBitmap(mask, mw, mh))
-                                using (var up = ResizeBitmap(maskBmp, netSize, netSize))
-                                {
-                                    int cx = Clamp(padX, 0, up.Width);
-                                    int cy = Clamp(padY, 0, up.Height);
-                                    int cw = Math.Min(resized.Width, up.Width - cx);
-                                    int ch = Math.Min(resized.Height, up.Height - cy);
-                                    if (cw <= 0 || ch <= 0)
-                                    {
-                                        Log($" [det#{di}] invalid crop: cw={cw}, ch={ch}");
-                                        di++;
-                                        continue;
-                                    }
-
-                                    using (var cropped = CropBitmap(up, new Rectangle(cx, cy, cw, ch)))
-                                    using (var toOrig = ResizeBitmap(cropped, orig.Width, orig.Height))
-                                    {
-                                        var boxOrig = NetBoxToOriginal(d.Box, scale, padX, padY, resized, orig.Size);
-                                        ZeroOutsideRect(toOrig, boxOrig);
-
-                                        var color = ClassColor(d.ClassId);
-                                        AlphaBlendMask(over, toOrig, color, maskThr, alpha);
-
-                                        byte thrByte = (byte)(maskThr * 255f + 0.5f);
-                                        DrawMaskOutline(toOrig, g, color, 2, thrByte);
-
-                                        if (drawBoxes)
-                                        {
-                                            using (var pen = new Pen(color, 2))
-                                                g.DrawRectangle(pen, boxOrig);
-                                        }
-                                        if (drawScores)
-                                        {
-                                            //if (d.Score > 0.8)
-                                           // {
-                                                DrawLabel(g, boxOrig, $"{d.Score:0.00}", color);
-                                           // }
-                                        }
-
-                                        Log($" [det#{di}] class={d.ClassId}, score={d.Score:F3}, " +
-                                            $"boxNet=({d.Box.Left:F1},{d.Box.Top:F1},{d.Box.Right:F1},{d.Box.Bottom:F1}), " +
-                                            $"boxOrig=({boxOrig.X},{boxOrig.Y},{boxOrig.Width},{boxOrig.Height}), " +
-                                            $"crop=({cx},{cy},{cw},{ch})");
-                                    }
-                                }
-                                di++;
-                            }
-                        }
-
-                        Log("Overlay composed successfully.");
-
-                        tOverlay = sw.Elapsed.TotalMilliseconds - tPrev;
-                        double tTotal = sw.Elapsed.TotalMilliseconds;
-
-                        var res = new SegResult
-                        {
-                            Overlayed = over,
-                            Dets = dets,
-                            SessionMs = tSession,
-                            PreMs = tPre,
-                            InferMs = tInfer,
-                            PostMs = tPost,
-                            OverlayMs = tOverlay,
-                            TotalMs = tTotal
-                        };
-                        res.TitleSuffix =
-                            $"session {res.SessionMs:F0}ms, pre {res.PreMs:F0}ms, infer {res.InferMs:F0}ms, post {res.PostMs:F0}ms, overlay {res.OverlayMs:F0}ms, total {res.TotalMs:F0}ms";
-                        return res;
-                    }
-                    finally
-                    {
-                        if (outputs != null) outputs.Dispose();
-                    }
-                }
-            }
+            if (progress == null) return;
+            if (next < cur) next = cur;
+            if (next > 100) next = 100;
+            cur = next;
+            Thread.Sleep(50);
+            progress.Report((cur, msg));
         }
+
+        /// <summary>
+        /// Open에서 호출: 세션을 미리 만들고(또는 재사용) 여러 단계로 진행률 보고
+        /// </summary>
+        public static InferenceSession EnsureSession(string modelPath, IProgress<(int percent, string status)> progress = null)
+        {
+            int p = 0;
+            ReportStep(progress, ref p, 5, "모델 경로 확인");
+
+            // 캐시 히트면 거의 즉시 끝나므로 그 사이도 단계적으로 표시
+            double initMs = 0;
+            bool createdNew = false;
+
+            // 1) EP 선택/옵션 구성 (GetOrCreateSession 내부에서 하더라도, 사용자 체감용 단계 분리)
+            ReportStep(progress, ref p, 12, "Execution Provider 확인");
+            ReportStep(progress, ref p, 20, "세션 옵션 구성");
+
+            // 2) 세션 생성/재사용
+            ReportStep(progress, ref p, 35, "세션 생성 준비");
+            var session = GetOrCreateSession(modelPath, out initMs); // 내부 캐시/EP 폴백 사용
+            createdNew = initMs > 0;
+
+            if (createdNew)
+            {
+                // 실제 세션 생성이 시간이 걸리면 여기서 크게 점프가 보임
+                ReportStep(progress, ref p, 60, $"세션 생성 완료 ({initMs:F0} ms)");
+            }
+            else
+            {
+                // 재사용이면 단계는 빠르게 지나가되, 구간은 동일하게 보여줌
+                ReportStep(progress, ref p, 45, "캐시된 세션 재사용");
+                ReportStep(progress, ref p, 60, "세션 확인 완료");
+            }
+
+            // 3) 메타데이터/입출력 검사 (보통 빠르지만 사용자에게 단계감 제공)
+            try
+            {
+                ReportStep(progress, ref p, 70, "모델 IO 메타데이터 읽기");
+                var inputs = session.InputMetadata;   // touch
+                var outputs = session.OutputMetadata; // touch
+                ReportStep(progress, ref p, 78, $"입력 {inputs.Count} / 출력 {outputs.Count} 확인");
+            }
+            catch
+            {
+                // 메타 조회 실패해도 세션 자체는 유효할 수 있음 — 진행 계속
+                ReportStep(progress, ref p, 78, "IO 메타데이터 확인(옵션) 건너뜀");
+            }
+
+            // 4) (선택) 웜업 준비 — 실제 추론은 하지 않되, 사용자 단계감 제공
+            ReportStep(progress, ref p, 85, "웜업 준비");
+            // 실제 웜업 추론을 여기서 하려면 입력 텐서 준비가 필요함(모델별 상이).
+            // 현재는 세션 로드만 목표라서 단계 표시만 하고 넘어감.
+            ReportStep(progress, ref p, 92, "리소스 초기화");
+
+            // 5) 완료
+            ReportStep(progress, ref p, 100, "완료");
+
+            return session;
+        }
+
 
         private static InferenceSession CreateSessionWithFallback(string modelPath)
         {

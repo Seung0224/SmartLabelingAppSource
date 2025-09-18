@@ -1,5 +1,6 @@
 ﻿using Guna.UI2.WinForms;
 using Guna.UI2.WinForms.Enums;
+using Microsoft.ML.OnnxRuntime;
 using Microsoft.WindowsAPICodePack.Dialogs;
 using System;
 using System.Collections.Generic;
@@ -19,7 +20,14 @@ namespace SmartLabelingApp
 {
     public partial class MainForm : Form
     {
+        #region 0) DeepLearning Fields
+        private InferenceSession _onnxSession = null;   // Open에서 만든 세션을 보관
+        #endregion
+
         #region 1) Constants & Static Data (상수/정적 데이터)
+        private string _currentModelName = "UNKNOWN";
+        private System.Threading.CancellationTokenSource _autoInferCts;
+
         // ---- Left Model Header Panel
         private const int MODEL_HEADER_H = 39;   // 헤더 패널 높이
         private const int MODEL_HEADER_Y = -43; // _leftRail 내부 기준 Y (원하는 값으로 조절)
@@ -801,7 +809,8 @@ namespace SmartLabelingApp
             _fileTree.ShowNodeToolTips = true;
             
             _leftDock.Controls.Add(leftContent);
-            CreateModelHeaderPanel("TEST");     // ← 초기 표기: DL Model : TEST
+            CreateModelHeaderPanel("UNKNOWN");
+            UpdateModelDependentControls();
             leftContent.Controls.Add(_fileTree);
             _leftRail.Controls.Add(_leftDock);
             _leftRail.BringToFront();
@@ -1057,10 +1066,30 @@ namespace SmartLabelingApp
 
         private void SetModelHeader(string modelName)
         {
-            string name = string.IsNullOrWhiteSpace(modelName) ? "UNKNOWN" : modelName.Trim();
+            _currentModelName = string.IsNullOrWhiteSpace(modelName) ? "UNKNOWN" : modelName.Trim();
             if (_modelHeaderLabel != null)
-                _modelHeaderLabel.Text = $"DL Model : {name}";
+                _modelHeaderLabel.Text = $"DL Model : {_currentModelName}";
+
+            UpdateModelDependentControls(); // ← 모델 여부에 따라 버튼 상태 갱신
         }
+
+        private void UpdateModelDependentControls()
+        {
+            bool hasModel = !string.IsNullOrWhiteSpace(_currentModelName)
+                            && !_currentModelName.Equals("UNKNOWN", StringComparison.OrdinalIgnoreCase);
+
+            // INFER 버튼: 모델 없으면 비활성화
+            if (_btnInfer != null)
+                _btnInfer.Enabled = hasModel;
+
+            // Toggle 버튼(슬롯 통째로 숨기면 레이아웃도 깔끔)
+            if (_slotToggle != null)
+            {
+                _slotToggle.Enabled = hasModel;
+                _slotToggle.Visible = hasModel;    // 숨김 처리 (원하면 Visible 대신 Enabled만 써도 됨)
+            }
+        }
+
 
         private void CreateHotkeyPanel()
         {
@@ -1138,22 +1167,23 @@ namespace SmartLabelingApp
                 }
             }
 
-            // 실제 표시/해제 로직 연결 지점
-            // TODO: 여기에서 원하는 표시 동작 수행 (예: 오버레이 토글, 라벨 표시 토글 등)
-            // e.g., _canvas?.SetSomethingVisible(_toggleOn);
+            if (_toggleOn)
+                _ = AutoInferIfEnabledAsync();
 
             if (_canvas != null && !_canvas.Focused) _canvas.Focus();
         }
 
 
-        private void OnPrevClick(object sender, EventArgs e)
+        private async void OnPrevClick(object sender, EventArgs e)
         {
             try { NavigateImage(-1); } catch { /* 무시 */ }
+            await AutoInferIfEnabledAsync();
             _canvas?.Focus();
         }
-        private void OnNextClick(object sender, EventArgs e)
+        private async void OnNextClick(object sender, EventArgs e)
         {
             try { NavigateImage(+1); } catch { /* 무시 */ }
+            await AutoInferIfEnabledAsync();
             _canvas?.Focus();
         }
 
@@ -2619,12 +2649,12 @@ namespace SmartLabelingApp
 
         // ------------------------------------------------------------
 
-        private void OnOpenClick(object sender, EventArgs e)
+        private async void OnOpenClick(object sender, EventArgs e)
         {
             using (var dlg = new OpenFileDialog())
             {
-                dlg.Title = "이미지 파일 또는 폴더 열기";
-                dlg.Filter = "이미지 파일|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff|모든 파일|*.*";
+                dlg.Title = "이미지 파일 or 폴더 or 딥러닝(ONNX) 모델 열기";
+                dlg.Filter = "Image or Onnx|*.png;*.jpg;*.jpeg;*.bmp;*.onnx;|모든 파일|*.*";
                 dlg.Multiselect = false;
 
                 dlg.CheckFileExists = false;
@@ -2637,11 +2667,48 @@ namespace SmartLabelingApp
 
                 if (System.IO.File.Exists(chosen))
                 {
+                    var ext = System.IO.Path.GetExtension(chosen);
+                    if (!string.IsNullOrEmpty(ext) && ext.Equals(".onnx", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // --- ONNX: 세션 미리 만들고 필드에 보관 (진행률 오버레이 표시)
+                        using (var overlay = new ProgressOverlay(this, "Loading model")) // 진행률 UI
+                        {
+                            var progress = new Progress<(int, string)>(p => overlay.Report(p.Item1, p.Item2));
+                            try
+                            {
+                                await Task.Run(() =>
+                                {
+                                    // 세션 준비(내부 캐시/EP 폴백 사용)
+                                    _onnxSession = SmartLabelingApp.YoloSegOnnx.EnsureSession(chosen, progress);
+                                    _currentModelName = chosen; // (선택) 경로도 기억
+                                });
+                            }
+                            catch (Exception ex)
+                            {
+                                _onnxSession = null;
+                                _currentModelName = null;
+
+                                new Guna.UI2.WinForms.Guna2MessageDialog
+                                {
+                                    Parent = this,
+                                    Caption = "오류",
+                                    Text = $"ONNX 파일 열기 실패:\n{ex.Message}",
+                                    Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
+                                    Icon = Guna.UI2.WinForms.MessageDialogIcon.Error
+                                }.Show();
+                                return;
+                            }
+                        }
+
+                        SetModelHeader(System.IO.Path.GetFileName(chosen));
+                        UpdateModelDependentControls();                    
+                        return;
+                    }
+
+                    // --- 이미지 파일 처리 (기존 그대로)
                     if (IsImageFile(chosen))
                     {
                         try
-                        #region 8) Utilities & Helpers (기타 보조 함수)
-                        #endregion  // 6) Event Handlers
                         {
                             LoadImageAtPath(chosen);
                             var folder = System.IO.Path.GetDirectoryName(chosen);
@@ -2682,6 +2749,74 @@ namespace SmartLabelingApp
                 }
             }
         }
+        private async Task AutoInferIfEnabledAsync()
+        {
+            // 0) 조건: 토글 OFF면 종료
+            if (!_toggleOn) return;
+
+            // 1) 세션/이미지 체크
+            if (_onnxSession == null || _canvas?.Image == null) return;
+
+            // 2) 직전 작업 취소(연달아 Next/Prev 눌러도 마지막 것만 수행)
+            _autoInferCts?.Cancel();
+            _autoInferCts = new System.Threading.CancellationTokenSource();
+            var token = _autoInferCts.Token;
+
+            try
+            {
+                Bitmap overlayed = null;
+                string titleSuffix = null;
+
+                using (var srcCopy = (Bitmap)_canvas.Image.Clone())
+                {
+                    await Task.Run(() =>
+                    {
+                        if (token.IsCancellationRequested) return;
+
+                        // Infer → Overlay
+                        var res = YoloSegOnnx.Infer(
+                            _onnxSession, srcCopy,
+                            conf: 0.6f, iou: 0.45f,
+                            minBoxAreaRatio: 0.002f,
+                            minMaskAreaRatio: 0.0008f,
+                            discardTouchingBorder: true
+                        );
+                        if (token.IsCancellationRequested) return;
+
+                        overlayed = YoloSegOnnx.Overlay(
+                            srcCopy, res,
+                            maskThr: 0.6f, alpha: 0.45f,
+                            drawBoxes: false, drawScores: true
+                        );
+                        titleSuffix = res.TitleSuffix;
+                    }, token);
+                }
+
+                if (token.IsCancellationRequested || overlayed == null) return;
+
+                // 3) UI 적용 (기존 이미지 해제해서 누수 방지)
+                var old = _canvas.Image;
+                _canvas.Image = overlayed;
+                old?.Dispose();
+                _canvas.Invalidate();
+
+                if (!string.IsNullOrEmpty(titleSuffix))
+                    this.Text = $"{this.Text.Split('|')[0].Trim()} | {titleSuffix}";
+            }
+            catch (OperationCanceledException) { /* 무시(디바운스) */ }
+            catch (Exception ex)
+            {
+                new Guna.UI2.WinForms.Guna2MessageDialog
+                {
+                    Parent = this,
+                    Caption = "오류",
+                    Text = $"자동 추론 실패:\n{ex.Message}",
+                    Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
+                    Icon = Guna.UI2.WinForms.MessageDialogIcon.Error
+                }.Show();
+            }
+        }
+
 
         private bool TryLoadYoloForCurrentImage()
         {
@@ -3504,206 +3639,64 @@ namespace SmartLabelingApp
             }
         }
 
-        private async void OnInferClick2(object sender, EventArgs e)
+        private async void OnInferClick(object sender, EventArgs e)
         {
-            string onnxPath = null;
-            string imagePath = null;
-
-            // 1) ONNX 모델 선택 (시작 위치: 바탕화면)
-            using (var ofdModel = new OpenFileDialog())
+            if (_canvas == null || _canvas.Image == null)
             {
-                ofdModel.Title = "ONNX 모델 파일을 선택하세요";
-                ofdModel.Filter = "ONNX Model (*.onnx)|*.onnx|All files|*.*";
-                ofdModel.Multiselect = false;
-                ofdModel.InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-
-                if (ofdModel.ShowDialog(this) != DialogResult.OK)
-                    return;
-
-                onnxPath = ofdModel.FileName;
-
-                try
+                new Guna.UI2.WinForms.Guna2MessageDialog
                 {
-                    using (var fs = new FileStream(onnxPath, FileMode.Open, FileAccess.Read, FileShare.Read)) { }
-                }
-                catch (Exception ex)
-                {
-                    new Guna.UI2.WinForms.Guna2MessageDialog
-                    {
-                        Parent = this,
-                        Caption = "오류",
-                        Text = $"ONNX 파일 열기 실패:\n{ex.Message}",
-                        Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
-                        Icon = Guna.UI2.WinForms.MessageDialogIcon.Error
-                    }.Show();
-                    return;
-                }
+                    Parent = this,
+                    Caption = "알림",
+                    Text = "이미지가 없습니다. 먼저 이미지를 Open으로 불러오세요.",
+                    Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
+                    Icon = Guna.UI2.WinForms.MessageDialogIcon.Information
+                }.Show();
+                return;
             }
 
-            // 2) 이미지 파일 시작 폴더 계산 (모델 상위 폴더/그 아래 Dataset 우선)
-            string startDir;
             try
             {
-                var modelDir = Path.GetDirectoryName(onnxPath);
-                var parentDir = modelDir != null ? Directory.GetParent(modelDir) : null;
+                Bitmap overlayed = null;
+                string titleSuffix = null;
 
-                startDir = parentDir?.FullName ?? modelDir;
-
-                if (parentDir != null)
+                using (var srcCopy = (Bitmap)_canvas.Image.Clone())
                 {
-                    var datasetDir = Path.Combine(parentDir.FullName, "Dataset");
-                    if (Directory.Exists(datasetDir))
-                        startDir = datasetDir;
-                }
-
-                if (string.IsNullOrEmpty(startDir) || !Directory.Exists(startDir))
-                    startDir = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
-            }
-            catch
-            {
-                startDir = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
-            }
-
-            // 3) 이미지 선택
-            Image openedImage = null;
-            string imageTitle = "";
-            using (var ofdImg = new OpenFileDialog())
-            {
-                ofdImg.Title = "이미지 파일을 선택하세요";
-                ofdImg.Filter = "Image files|*.jpg;*.jpeg;*.png;*.bmp;*.tif;*.tiff|All files|*.*";
-                ofdImg.Multiselect = false;
-                ofdImg.InitialDirectory = startDir;
-
-                if (ofdImg.ShowDialog(this) != DialogResult.OK)
-                    return;
-
-                imagePath = ofdImg.FileName;
-
-                try
-                {
-                    // 스트림에서 읽은 이미지는 폼이 닫혀도 쓸 수 있도록 복사본을 만들어 전달
-                    using (var fs = new FileStream(imagePath, FileMode.Open, FileAccess.Read, FileShare.Read))
-                    using (var img = Image.FromStream(fs, useEmbeddedColorManagement: true, validateImageData: true))
+                    await Task.Run(() =>
                     {
-                        openedImage = (Image)img.Clone();
-                        imageTitle = Path.GetFileName(imagePath);
-                    }
+                        // 1) 추론
+                        var res = YoloSegOnnx.Infer(_onnxSession, srcCopy, conf: 0.6f, iou: 0.45f, minBoxAreaRatio: 0.002f, minMaskAreaRatio: 0.0008f, discardTouchingBorder: true);
+                        // 2) 오버레이
+                        overlayed = YoloSegOnnx.Overlay(srcCopy, res, maskThr: 0.6f, alpha: 0.45f, drawBoxes: false, drawScores: true);
+
+                        titleSuffix = res.TitleSuffix;
+                    });
                 }
-                catch (Exception ex)
+
+                // 3) 새 창 없이, 현재 캔버스 이미지에 바로 오버레이 적용
+                if (overlayed != null)
                 {
-                    new Guna.UI2.WinForms.Guna2MessageDialog
-                    {
-                        Parent = this,
-                        Caption = "오류",
-                        Text = $"이미지 열기 실패:\n{ex.Message}",
-                        Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
-                        Icon = Guna.UI2.WinForms.MessageDialogIcon.Error
-                    }.Show();
-                    return;
+                    // 원본 위에 오버레이 결과를 '보기용'으로 적용
+                    _canvas.Image = overlayed;
+                    _canvas.Invalidate();
+
+                    // 타이틀 업데이트(선택)
+                    if (!string.IsNullOrEmpty(titleSuffix))
+                        this.Text = $"{this.Text.Split('|')[0].Trim()} | {titleSuffix}";
                 }
             }
-
-            // 4) 메시지박스 대신 Cyotek ImageBox로 표시
-            using (var viewer = new InferResultDialog(openedImage, imageTitle))
+            catch (Exception ex)
             {
-                viewer.ShowDialog(this);
-                // viewer가 닫힐 때 Image를 내부에서 Dispose 하도록 구현되어 있음
+                new Guna.UI2.WinForms.Guna2MessageDialog
+                {
+                    Parent = this,
+                    Caption = "오류",
+                    Text = $"추론 실패:\n{ex.Message}",
+                    Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
+                    Icon = Guna.UI2.WinForms.MessageDialogIcon.Error
+                }.Show();
             }
-
-            await Task.CompletedTask;
         }
 
-        private void OnInferClick(object sender, EventArgs e)
-        {
-            string onnxPath = null;
-            string imagePath = null;
-
-            // 1) ONNX 선택 (초기 폴더: 바탕화면)
-            using (var ofdModel = new OpenFileDialog())
-            {
-                ofdModel.Title = "ONNX 모델 파일을 선택하세요";
-                ofdModel.Filter = "ONNX Model (*.onnx)|*.onnx|All files|*.*";
-                ofdModel.Multiselect = false;
-                ofdModel.InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-
-                if (ofdModel.ShowDialog(this) != DialogResult.OK) return;
-                onnxPath = ofdModel.FileName;
-                try { var _ = System.IO.File.OpenRead(onnxPath); }
-                catch (Exception ex)
-                {
-                    new Guna.UI2.WinForms.Guna2MessageDialog
-                    {
-                        Parent = this,
-                        Caption = "오류",
-                        Text = $"ONNX 파일 열기 실패:\n{ex.Message}",
-                        Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
-                        Icon = Guna.UI2.WinForms.MessageDialogIcon.Error
-                    }.Show();
-                    return;
-                }
-            }
-
-            // 2) 이미지 선택 (모델 상위\Dataset 우선)
-            string startDir;
-            try
-            {
-                var modelDir = System.IO.Path.GetDirectoryName(onnxPath);
-                var parent = modelDir != null ? System.IO.Directory.GetParent(modelDir) : null;
-                startDir = parent?.FullName ?? modelDir ?? Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
-                var ds = System.IO.Path.Combine(parent?.FullName ?? "", "Dataset");
-                if (System.IO.Directory.Exists(ds)) startDir = ds;
-            }
-            catch { startDir = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures); }
-
-            using (var ofdImg = new OpenFileDialog())
-            {
-                ofdImg.Title = "이미지 파일을 선택하세요";
-                ofdImg.Filter = "Image files|*.jpg;*.jpeg;*.png;*.bmp;*.tif;*.tiff|All files|*.*";
-                ofdImg.Multiselect = false;
-                ofdImg.InitialDirectory = startDir;
-
-                if (ofdImg.ShowDialog(this) != DialogResult.OK) return;
-                imagePath = ofdImg.FileName;
-
-                try { var img = Image.FromFile(imagePath); }
-                catch (Exception ex)
-                {
-                    new Guna.UI2.WinForms.Guna2MessageDialog
-                    {
-                        Parent = this,
-                        Caption = "오류",
-                        Text = $"이미지 열기 실패:\n{ex.Message}",
-                        Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
-                        Icon = Guna.UI2.WinForms.MessageDialogIcon.Error
-                    }.Show();
-                    return;
-                }
-            }
-
-            this.Cursor = Cursors.WaitCursor;
-            try
-            {
-                var seg = YoloSegOnnx.InferAndOverlay(
-                    onnxPath, imagePath,
-                    conf: 0.6f, iou: 0.45f,
-                    maskThr: 0.6f, alpha: 0.45f,
-                    maxInstances: 4,
-                    minBoxAreaRatio: 0.002f,
-                    minMaskAreaRatio: 0.0008f,
-                    discardTouchingBorder: true,
-                    drawBoxes: false,
-                    drawScores: true
-                );
-
-                this.Text = $"{System.IO.Path.GetFileName(imagePath)} | {seg.TitleSuffix}";
-                var dlg = new InferResultDialog(seg.Overlayed, $"{System.IO.Path.GetFileName(imagePath)} | {seg.TitleSuffix}");
-                dlg.ShowDialog(this);
-            }
-            finally
-            {
-                this.Cursor = Cursors.Default;
-            }
-        }
 
         private async Task<bool> WaitForFileReadyAsync(string path, TimeSpan timeout, Action<int, string> progress = null)
         {
