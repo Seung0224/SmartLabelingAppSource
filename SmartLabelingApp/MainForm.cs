@@ -79,7 +79,7 @@ namespace SmartLabelingApp
         private const int FRAME_X = 205;
         private const int FRAME_X_OFFSET = 85;
         private const int FRAME_Y = 46;
-        private const int FRAME_Y_OFFSET = 5;
+        private const int FRAME_Y_OFFSET = 500;
         private const int FRAME_W = 800;
         private const int FRAME_H = 547;
         private const int FRAME_BORDER = 2;
@@ -570,7 +570,7 @@ namespace SmartLabelingApp
             _btnPrev = CreateToolIcon(Properties.Resources.Prev, "Prev Image", RIGHT_SLOT_H, RIGHT_ICON_PX);
             _btnNext = CreateToolIcon(Properties.Resources.Next, "Next Image", RIGHT_SLOT_H, RIGHT_ICON_PX);
             _btnToggle = CreateToolIcon(Properties.Resources.Toggleoff2, "AutoRun Toggle", RIGHT_SLOT_H, 38);
-            
+
             var prevSlot = WrapToolSlot(_btnPrev, innerW3 / 2, RIGHT_SLOT_H);
             var nextSlot = WrapToolSlot(_btnNext, innerW3 / 2, RIGHT_SLOT_H);
             _slotToggle = WrapToolSlot(_btnToggle, innerW3, RIGHT_SLOT_H);
@@ -592,8 +592,8 @@ namespace SmartLabelingApp
             _navRow.Controls.Add(prevSlot);
             _navRow.Controls.Add(nextSlot);
             prevSlot.BorderColor = nextSlot.BorderColor = Color.LightGray;
-            
-            
+
+
             _rightTools3.Controls.Add(_navRow);
             _rightTools3.Controls.Add(_slotToggle);
 
@@ -809,13 +809,13 @@ namespace SmartLabelingApp
 
             _fileTree.StateImageList = LabelStatusService.BuildStateImageList(LabelStatusService.BadgeStyle.Check, 16, 2);
             _fileTree.ShowNodeToolTips = true;
-            
+
             _leftDock.Controls.Add(leftContent);
             CreateModelHeaderPanel("UNKNOWN");
             UpdateModelDependentControls();
 
             this.Shown += async (s, e) => await TryAutoLoadDefaultModelAsync();
-            
+
             leftContent.Controls.Add(_fileTree);
             _leftRail.Controls.Add(_leftDock);
             _leftRail.BringToFront();
@@ -994,7 +994,7 @@ namespace SmartLabelingApp
             };
 
             CreateHotkeyPanel();
-            UpdateViewerBounds(); 
+            UpdateViewerBounds();
 
             // ---- 레이아웃 이벤트
             _canvasHost.Resize += (s, e) => UpdateSideRailsLayout();
@@ -1741,8 +1741,7 @@ namespace SmartLabelingApp
 
                     if (RIGHT_BAR3_SNAP_TO_VIEWER)
                     {
-                        // ★ 뷰어(캔버스) 하단에 스냅: inner.Bottom = frame.Top + frame.Height - FRAME_BORDER
-                        int viewerBottom = _rightRail.Padding.Top + GetFrameRect().Height - FRAME_BORDER + RIGHT_BAR3_TAIL;
+                        int viewerBottom = _rightRail.Padding.Top + this.ClientSize.Height - FRAME_BORDER + RIGHT_BAR3_TAIL;
                         int desired = viewerBottom - _rightToolDock3.Top;
 
                         // 공간이 모자라면 바2를 줄여서 확보
@@ -1760,12 +1759,15 @@ namespace SmartLabelingApp
                             desired = Math.Max(RIGHT_BAR_MIN_H, desired);
                         }
 
-                        // viewerBottom을 초과하지 않도록 제한 (음수/과도 값 방지)
+                        // viewerBottom을 초과하지 않도록 제한
                         int maxAllow = Math.Max(RIGHT_BAR_MIN_H, viewerBottom - _rightToolDock3.Top);
                         h3 = Math.Min(Math.Max(RIGHT_BAR_MIN_H, desired), maxAllow);
                     }
 
                     _rightToolDock3.Height = h3;
+
+                    int bottomSpace = _rightRail.ClientSize.Height - _rightToolDock3.Top;
+                    _rightToolDock3.Height = bottomSpace;
                 }
 
                 // 최종 배치 후, 칩 폭 보정
@@ -2745,7 +2747,7 @@ namespace SmartLabelingApp
                         }
 
                         SetModelHeader(System.IO.Path.GetFileName(chosen));
-                        UpdateModelDependentControls();                    
+                        UpdateModelDependentControls();
                         return;
                     }
 
