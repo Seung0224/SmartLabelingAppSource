@@ -13,6 +13,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -2821,67 +2822,27 @@ namespace SmartLabelingApp
                 }
             }
         }
+
         private async Task AutoInferIfEnabledAsync()
         {
-
             if (!_toggleOn) return;
+            if (_onnxSession == null || _sourceImage == null) return;
 
-
-            if (_onnxSession == null || _canvas?.Image == null) return;
-
-
+            // 이전 작업 취소
             _autoInferCts?.Cancel();
-            _autoInferCts = new System.Threading.CancellationTokenSource();
-            var token = _autoInferCts.Token;
+            _autoInferCts?.Dispose();
+            _autoInferCts = new CancellationTokenSource();
 
             try
             {
-                Bitmap overlayed = null;
-                string titleSuffix = null;
-
-                using (var srcCopy = (Bitmap)_sourceImage.Clone())
-                {
-                    await Task.Run(() =>
-                    {
-                        if (token.IsCancellationRequested) return;
-
-
-                        var res = YoloSegOnnx.Infer(_onnxSession, srcCopy);
-                        var swOverlay = System.Diagnostics.Stopwatch.StartNew();
-                        overlayed = YoloSegOnnx.Overlay(srcCopy, res);
-                        swOverlay.Stop();
-
-                        AddLog($"Inference 완료: {res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms, overlay={swOverlay.Elapsed.TotalMilliseconds:F0}ms");
-                        AddLog($"총합 ≈ {(res.PreMs + res.InferMs + res.PostMs + swOverlay.Elapsed.TotalMilliseconds):F0}ms");
-
-                        titleSuffix = res.TitleSuffix;
-                    }, token);
-                }
-
-                if (token.IsCancellationRequested || overlayed == null) return;
-
-
-                var old = _canvas.Image;
-                _canvas.Image = overlayed;
-                old?.Dispose();
-                _canvas.Invalidate();
-
-                if (!string.IsNullOrEmpty(titleSuffix))
-                    this.Text = $"{this.Text.Split('|')[0].Trim()} | {titleSuffix}";
+                await RunInferenceAndApplyAsync(_autoInferCts.Token, updateTitle: true);
             }
-            catch (OperationCanceledException) { }
-            catch (Exception ex)
+            catch (OperationCanceledException)
             {
-                new Guna.UI2.WinForms.Guna2MessageDialog
-                {
-                    Parent = this,
-                    Caption = "오류",
-                    Text = $"자동 추론 실패:\n{ex.Message}",
-                    Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
-                    Icon = Guna.UI2.WinForms.MessageDialogIcon.Error
-                }.Show();
+                // 취소는 무시
             }
         }
+
 
         private bool TryLoadYoloForCurrentImage()
         {
@@ -3704,6 +3665,53 @@ namespace SmartLabelingApp
             }
         }
 
+
+
+
+
+
+
+
+
+
+        // 공용: 원본(_sourceImage)로 추론 + 오버레이 생성 + 화면 적용까지 한 번에 수행
+        private async Task<bool> RunInferenceAndApplyAsync(CancellationToken token = default, bool updateTitle = true)
+        {
+            Bitmap overlayed = null;
+            string titleSuffix = null;
+
+            using (var srcCopy = (Bitmap)_sourceImage.Clone())
+            {
+                await Task.Run(() =>
+                {
+                    if (token.IsCancellationRequested) return;
+
+                    var res = YoloSegOnnx.Infer(_onnxSession, srcCopy);
+                    var swOverlay = System.Diagnostics.Stopwatch.StartNew();
+                    overlayed = YoloSegOnnx.Overlay(srcCopy, res);
+                    swOverlay.Stop();
+
+                    AddLog($"Inference 완료: {res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms, overlay={swOverlay.Elapsed.TotalMilliseconds:F0}ms");
+                    AddLog($"총합 ≈ {(res.PreMs + res.InferMs + res.PostMs + swOverlay.Elapsed.TotalMilliseconds):F0}ms");
+
+                    titleSuffix = res.TitleSuffix;
+                }, token);
+            }
+
+            if (token.IsCancellationRequested || overlayed == null)
+                return false;
+
+            var old = _canvas.Image;
+            _canvas.Image = overlayed;
+            old?.Dispose();
+            _canvas.Invalidate();
+
+            if (updateTitle && !string.IsNullOrEmpty(titleSuffix))
+                this.Text = $"{this.Text.Split('|')[0].Trim()} | {titleSuffix}";
+
+            return true;
+        }
+
         private async void OnInferClick(object sender, EventArgs e)
         {
             if (_canvas == null || _canvas.Image == null)
@@ -3721,36 +3729,7 @@ namespace SmartLabelingApp
 
             try
             {
-                Bitmap overlayed = null;
-                string titleSuffix = null;
-
-                using (var srcCopy = (Bitmap)_sourceImage.Clone())
-                {
-                    await Task.Run(() =>
-                    {
-                        var res = YoloSegOnnx.Infer(_onnxSession, srcCopy);
-                        var swOverlay = System.Diagnostics.Stopwatch.StartNew();
-                        overlayed = YoloSegOnnx.Overlay(srcCopy, res);
-                        swOverlay.Stop();
-
-                        AddLog($"Inference 완료: {res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms, overlay={swOverlay.Elapsed.TotalMilliseconds:F0}ms");
-                        AddLog($"총합 ≈ {(res.PreMs + res.InferMs + res.PostMs + swOverlay.Elapsed.TotalMilliseconds):F0}ms");
-
-                        titleSuffix = res.TitleSuffix;
-                    });
-                }
-
-
-                if (overlayed != null)
-                {
-
-                    _canvas.Image = overlayed;
-                    _canvas.Invalidate();
-
-
-                    if (!string.IsNullOrEmpty(titleSuffix))
-                        this.Text = $"{this.Text.Split('|')[0].Trim()} | {titleSuffix}";
-                }
+                await RunInferenceAndApplyAsync(CancellationToken.None, updateTitle: true);
             }
             catch (Exception ex)
             {
