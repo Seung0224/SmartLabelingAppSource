@@ -89,9 +89,6 @@ namespace SmartLabelingApp
             public double InferMs { get; set; }
             public double PostMs { get; set; }
             public double TotalMs { get; set; }
-
-            // 부가 텍스트
-            public string TitleSuffix { get; set; }
         }
 
         public class Det
@@ -101,14 +98,7 @@ namespace SmartLabelingApp
             public int ClassId;
             public float[] Coeff;    // seg_dim
         }
-        public static SegResult Infer(
-    InferenceSession session,
-    Bitmap orig,
-    float conf = 0.9f,
-    float iou = 0.45f,
-    float minBoxAreaRatio = 0.003f,
-    float minMaskAreaRatio = 0.003f,
-    bool discardTouchingBorder = true)
+        public static SegResult Infer(InferenceSession session, Bitmap orig, float conf = 0.9f, float iou = 0.45f, float minBoxAreaRatio = 0.003f, float minMaskAreaRatio = 0.003f, bool discardTouchingBorder = true)
         {
             Log("Infer(session, bitmap) called");
 
@@ -293,9 +283,6 @@ namespace SmartLabelingApp
                         TotalMs = sw.Elapsed.TotalMilliseconds
                     };
 
-                    res.TitleSuffix =
-                        $"session {res.SessionMs:F0}ms, pre {res.PreMs:F0}ms, infer {res.InferMs:F0}ms, post {res.PostMs:F0}ms, total {res.TotalMs:F0}ms";
-
                     return res;
                 }
                 finally
@@ -306,13 +293,7 @@ namespace SmartLabelingApp
         }
 
         // === 완전 분리: 합성만 수행 (원본 + SegResult → 새 Bitmap 반환) ===
-        public static Bitmap Overlay(
-            Bitmap orig,
-            SegResult r,
-            float maskThr = 0.65f,
-            float alpha = 0.45f,
-            bool drawBoxes = false,
-            bool drawScores = true)
+        public static Bitmap Overlay(Bitmap orig, SegResult r, float maskThr = 0.65f, float alpha = 0.45f, bool drawBoxes = false, bool drawScores = true)
         {
             if (orig == null) throw new ArgumentNullException(nameof(orig));
             if (r == null) throw new ArgumentNullException(nameof(r));
@@ -377,7 +358,7 @@ namespace SmartLabelingApp
                             }
                             if (drawScores)
                             {
-                                DrawLabel(g, boxOrig, $"{d.Score:0.00}", color);
+                                DrawLabel(g, boxOrig, $"[{d.ClassId}], Score{d.Score:0.00}", color);
                             }
                         }
                     }
@@ -387,9 +368,10 @@ namespace SmartLabelingApp
             return over;
         }
 
+
         private static void DrawLabel(Graphics g, Rectangle anchor, string text, Color boxColor)
         {
-            using (var font = new Font("Segoe UI", 12, FontStyle.Bold))
+            using (var font = new Font("Segoe UI", 8, FontStyle.Regular))
             {
                 var sizeF = g.MeasureString(text, font);
                 int pad = 4;

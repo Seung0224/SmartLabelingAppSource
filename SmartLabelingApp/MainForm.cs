@@ -2835,7 +2835,7 @@ namespace SmartLabelingApp
 
             try
             {
-                await RunInferenceAndApplyAsync(_autoInferCts.Token, updateTitle: true);
+                await RunInferenceAndApplyAsync(_autoInferCts.Token);
             }
             catch (OperationCanceledException)
             {
@@ -3665,20 +3665,10 @@ namespace SmartLabelingApp
             }
         }
 
-
-
-
-
-
-
-
-
-
         // 공용: 원본(_sourceImage)로 추론 + 오버레이 생성 + 화면 적용까지 한 번에 수행
-        private async Task<bool> RunInferenceAndApplyAsync(CancellationToken token = default, bool updateTitle = true)
+        private async Task<bool> RunInferenceAndApplyAsync(CancellationToken token = default)
         {
             Bitmap overlayed = null;
-            string titleSuffix = null;
 
             using (var srcCopy = (Bitmap)_sourceImage.Clone())
             {
@@ -3690,11 +3680,9 @@ namespace SmartLabelingApp
                     var swOverlay = System.Diagnostics.Stopwatch.StartNew();
                     overlayed = YoloSegOnnx.Overlay(srcCopy, res);
                     swOverlay.Stop();
-
+                    
                     AddLog($"Inference 완료: {res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms, overlay={swOverlay.Elapsed.TotalMilliseconds:F0}ms");
                     AddLog($"총합 ≈ {(res.PreMs + res.InferMs + res.PostMs + swOverlay.Elapsed.TotalMilliseconds):F0}ms");
-
-                    titleSuffix = res.TitleSuffix;
                 }, token);
             }
 
@@ -3705,9 +3693,6 @@ namespace SmartLabelingApp
             _canvas.Image = overlayed;
             old?.Dispose();
             _canvas.Invalidate();
-
-            if (updateTitle && !string.IsNullOrEmpty(titleSuffix))
-                this.Text = $"{this.Text.Split('|')[0].Trim()} | {titleSuffix}";
 
             return true;
         }
@@ -3729,7 +3714,7 @@ namespace SmartLabelingApp
 
             try
             {
-                await RunInferenceAndApplyAsync(CancellationToken.None, updateTitle: true);
+                await RunInferenceAndApplyAsync(CancellationToken.None);
             }
             catch (Exception ex)
             {
