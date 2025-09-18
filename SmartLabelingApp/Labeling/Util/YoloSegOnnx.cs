@@ -163,6 +163,7 @@ namespace SmartLabelingApp
                 int netSize = Math.Max(netH, netW);
                 Log($"Chosen netSize: {netSize}");
 
+                // 딥러닝 모델에 맞게 리사이즈 + 패딩 하고 텐서로 변환
                 using (var boxed = Letterbox(orig, netSize, out float scale, out int padX, out int padY, out Size resized))
                 {
                     Log($"Letterbox: scale={scale:F6}, padX={padX}, padY={padY}, resized={resized.Width}x{resized.Height}");
@@ -180,6 +181,14 @@ namespace SmartLabelingApp
                         };
 
                         outputs = session.Run(inputsList);
+
+                        // t3 (3차원): 디텍션 헤드 → 박스, 클래스 점수, 마스크 계수 outputs
+                        // t4 (4차원): 프로토타입 마스크(Proto) → 마스크 기저 이미지들의 묶음
+                        // t3과 t4를 합쳐셔 오버레이를 그림
+
+                        // 이 뒤로 값이 픽셀의 위치나 값들이 정규화된 값이기때문에 다시 원래 이미지 좌표로 돌리기위해 원래 픽셀값으로 돌림
+                        // NMS: IoU 기준으로 겹치는 박스를 제거하여 중복 제거
+
                         Log($"session.Run() returned {outputs.Count} outputs");
 
                         tInfer = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
@@ -367,7 +376,10 @@ namespace SmartLabelingApp
                                         }
                                         if (drawScores)
                                         {
-                                            DrawLabel(g, boxOrig, $"{d.Score:0.00}", color);
+                                            //if (d.Score > 0.8)
+                                           // {
+                                                DrawLabel(g, boxOrig, $"{d.Score:0.00}", color);
+                                           // }
                                         }
 
                                         Log($" [det#{di}] class={d.ClassId}, score={d.Score:F3}, " +

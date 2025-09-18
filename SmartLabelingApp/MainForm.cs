@@ -36,7 +36,7 @@ namespace SmartLabelingApp
         private const int RIGHT_ICON_PAD = 2; // 슬롯 안쪽 여백(padding)
 
         private const int RIGHT_BAR1_H = 446; // 상단 아이콘바 높이
-        private const int RIGHT_BAR2_H = 328; // 라벨링 ADD 바 높이
+        private const int RIGHT_BAR2_H = 292; // 라벨링 ADD 바 높이
         private const int RIGHT_BAR_GAP = 4;  // 바 사이 여백
 
         // 바(SAVE) + 레이아웃 보정 상수
@@ -130,7 +130,6 @@ namespace SmartLabelingApp
         private FlowLayoutPanel _rightTools3;
 
         // 우측 툴 버튼들
-        private readonly Guna2Button _btnOpen;
         private readonly Guna2ImageButton _btnPointer;
         private readonly Guna2ImageButton _btnTriangle;
         private readonly Guna2ImageButton _btnBox;
@@ -147,10 +146,13 @@ namespace SmartLabelingApp
         private Guna2Panel _slotToggle;
         private bool _toggleOn = false;
         private Panel _navRow;
-        private Guna2Button _btnAdd;
-        private Guna2Button _btnExport;
-        private Guna2Button _btnTrain;
-        private Guna2Button _btnInfer;
+
+        private readonly Guna2Button _btnAdd;
+        private readonly Guna2Button _btnOpen;
+        private readonly Guna2Button _btnSave;
+        private readonly Guna2Button _btnExport;
+        private readonly Guna2Button _btnTrain;
+        private readonly Guna2Button _btnInfer;
 
         // 좌측 탐색(폴더/파일)
         private Guna2Panel _leftRail;
@@ -465,6 +467,23 @@ namespace SmartLabelingApp
             _btnOpen.Click += OnOpenClick;
             _rightTools3.Controls.Add(_btnOpen);
 
+            _btnSave = new Guna2Button
+            {
+                Text = "2:SAVE",
+                BorderRadius = 12,
+                BorderThickness = 2,
+                BorderColor = Color.LightGray,
+                FillColor = Color.Transparent,
+                ForeColor = Color.Black,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                AutoSize = false,
+                Size = new Size(innerW3, toolEdge),
+                Margin = new Padding(0, 0, 0, 8),
+                TabStop = false
+            };
+            _btnSave.Click += OnSaveClick;
+            _rightTools3.Controls.Add(_btnSave);
+
             _btnExport = new Guna2Button
             {
                 Text = "3:EXPRT",
@@ -499,31 +518,6 @@ namespace SmartLabelingApp
             _btnTrain.Click += OnTrainClick;
             _rightTools3.Controls.Add(_btnTrain);
 
-            _btnPrev = CreateToolIcon(Properties.Resources.Prev, "Prev", RIGHT_SLOT_H, RIGHT_ICON_PX);
-            _btnNext = CreateToolIcon(Properties.Resources.Next, "Next", RIGHT_SLOT_H, RIGHT_ICON_PX);
-            _btnToggle = CreateToolIcon(Properties.Resources.Toggleoff2, "Toggle: OFF", RIGHT_SLOT_H, 38);
-            
-            var prevSlot = WrapToolSlot(_btnPrev, innerW3 / 2, RIGHT_SLOT_H);
-            var nextSlot = WrapToolSlot(_btnNext, innerW3 / 2, RIGHT_SLOT_H);
-            _slotToggle = WrapToolSlot(_btnToggle, innerW3, RIGHT_SLOT_H);
-
-            _btnToggle.Click += OnToggleClick;
-
-            _navRow = new FlowLayoutPanel
-            {
-                Height = RIGHT_SLOT_H,
-                Width = innerW3,
-                Margin = new Padding(0, 0, 0, 8),
-                FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false,
-                BackColor = Color.Transparent
-            };
-
-            _navRow.Controls.Add(prevSlot);
-            _navRow.Controls.Add(nextSlot);
-            prevSlot.BorderColor = nextSlot.BorderColor = Color.LightGray;
-            _rightTools3.Controls.Add(_navRow);
-
             _btnInfer = new Guna2Button
             {
                 Text = "5:INFER",
@@ -541,7 +535,37 @@ namespace SmartLabelingApp
             _btnInfer.Click += OnInferClick;
             _rightTools3.Controls.Add(_btnInfer);
 
+            _btnPrev = CreateToolIcon(Properties.Resources.Prev, "Prev Image", RIGHT_SLOT_H, RIGHT_ICON_PX);
+            _btnNext = CreateToolIcon(Properties.Resources.Next, "Next Image", RIGHT_SLOT_H, RIGHT_ICON_PX);
+            _btnToggle = CreateToolIcon(Properties.Resources.Toggleoff2, "AutoRun Toggle", RIGHT_SLOT_H, 38);
+            
+            var prevSlot = WrapToolSlot(_btnPrev, innerW3 / 2, RIGHT_SLOT_H);
+            var nextSlot = WrapToolSlot(_btnNext, innerW3 / 2, RIGHT_SLOT_H);
+            _slotToggle = WrapToolSlot(_btnToggle, innerW3, RIGHT_SLOT_H);
+
+            _btnPrev.Click += OnPrevClick;
+            _btnNext.Click += OnNextClick;
+            _btnToggle.Click += OnToggleClick;
+
+            _navRow = new FlowLayoutPanel
+            {
+                Height = RIGHT_SLOT_H,
+                Width = innerW3,
+                Margin = new Padding(0, 0, 0, 8),
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                BackColor = Color.Transparent
+            };
+
+            _navRow.Controls.Add(prevSlot);
+            _navRow.Controls.Add(nextSlot);
+            prevSlot.BorderColor = nextSlot.BorderColor = Color.LightGray;
+            
+            
+            _rightTools3.Controls.Add(_navRow);
             _rightTools3.Controls.Add(_slotToggle);
+
+
             // 파일/작업 플로우
             _tt.SetToolTip(_btnOpen, "이미지 파일 또는 폴더를 열어 작업을 시작합니다.");
             _tt.SetToolTip(_btnAdd, "새 라벨(클래스)을 추가합니다.");
@@ -560,9 +584,6 @@ namespace SmartLabelingApp
             _btnEraser = CreateToolIcon(Properties.Resources.Eraser, "Eraser", RIGHT_SLOT_H, RIGHT_ICON_PX);
             _btnMask = CreateToolIcon(Properties.Resources.Masktoggle, "Mask", RIGHT_SLOT_H, RIGHT_ICON_PX);
             _btnAI = CreateToolIcon(Properties.Resources.AI, "AI", RIGHT_SLOT_H, RIGHT_ICON_PX);
-
-            _btnPrev.Click += OnPrevClick;
-            _btnNext.Click += OnNextClick;
 
             _btnPointer.Click += delegate { SetTool(ToolMode.Pointer, _btnPointer); };
             _btnCircle.Click += delegate { SetTool(ToolMode.Circle, _btnCircle); };
@@ -1582,7 +1603,7 @@ namespace SmartLabelingApp
             if (_canvas != null && !_canvas.Focused) _canvas.Focus();
         }
 
-        private void OnSaveClick()
+        private void OnSaveClick(object sender, EventArgs e)
         {
             try
             {
@@ -1830,7 +1851,7 @@ namespace SmartLabelingApp
                             }
 
                             // 저장 (AI 모드 유지, 선택/편집 잔상 없음)
-                            OnSaveClick();
+                            OnSaveClick(_btnSave, null);
 
                             labeled++;
                         }
@@ -2138,7 +2159,7 @@ namespace SmartLabelingApp
         {
             if (keyData == (Keys.Control | Keys.S))
             {
-                OnSaveClick();
+                OnSaveClick(_btnSave, null);
                 return true;
             }
             if (keyData == (Keys.Control | Keys.E))
