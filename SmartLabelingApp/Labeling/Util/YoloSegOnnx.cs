@@ -10,6 +10,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
+using static SmartLabelingApp.ImageCanvas;
 
 namespace SmartLabelingApp
 {
@@ -21,6 +22,16 @@ namespace SmartLabelingApp
         const int LABEL_BADGE_BORDER_PX = 2;
         const int LABEL_BADGE_ACCENT_W = 4;
         const int LABEL_BADGE_WIPE_PX = 1;
+
+        private struct Seg { public PointF A, B; public Seg(PointF a, PointF b) { A = a; B = b; } }
+
+        // 포인트를 키로 묶기 위한 양자화 (연결 시 사용)
+        private static long QKey(PointF p, float scale = 100f)
+        {
+            int xi = (int)Math.Round(p.X * scale);
+            int yi = (int)Math.Round(p.Y * scale);
+            return ((long)xi << 32) ^ (uint)yi;
+        }
 
         // ------- Logging -------
         private static void Log(string msg)
@@ -105,6 +116,209 @@ namespace SmartLabelingApp
             public int ClassId;
             public float[] Coeff;    // seg_dim
         }
+
+        private static List<PointF[]> ChainSegmentsToPolylines(List<Seg> segs, float tol = 0.01f)
+        {
+            var unused = new HashSet<int>(Enumerable.Range(0, segs.Count));
+            var map = new Dictionary<long, List<int>>();
+
+            void addEnd(PointF p, int idx)
+            {
+                var k = QKey(p, 100f);
+                if (!map.TryGetValue(k, out var lst)) map[k] = lst = new List<int>();
+                lst.Add(idx);
+            }
+
+            for (int i = 0; i < segs.Count; i++) { addEnd(segs[i].A, i); addEnd(segs[i].B, i); }
+
+            var polylines = new List<PointF[]>();
+
+            while (unused.Count > 0)
+            {
+                int seed = unused.First();
+                unused.Remove(seed);
+
+                var a = segs[seed].A; var b = segs[seed].B;
+                var poly = new List<PointF> { a, b };
+
+                // 한쪽 끝을 계속 확장
+                bool extended = true;
+                while (extended)
+                {
+                    extended = false;
+
+                    // 끝점 b에서 이어지는 선분 찾기
+                    var kb = QKey(b, 100f);
+                    if (map.TryGetValue(kb, out var cand))
+                    {
+                        for (int i = cand.Count - 1; i >= 0; i--)
+                        {
+                            int si = cand[i];
+                            if (!unused.Contains(si)) { cand.RemoveAt(i); continue; }
+                            var s = segs[si];
+                            // b==s.A 이면 s.B로, b==s.B 이면 s.A로
+                            if (Math.Abs(b.X - s.A.X) < tol && Math.Abs(b.Y - s.A.Y) < tol)
+                            { poly.Add(s.B); b = s.B; unused.Remove(si); extended = true; cand.RemoveAt(i); break; }
+                            if (Math.Abs(b.X - s.B.X) < tol && Math.Abs(b.Y - s.B.Y) < tol)
+                            { poly.Add(s.A); b = s.A; unused.Remove(si); extended = true; cand.RemoveAt(i); break; }
+                        }
+                    }
+
+                    // 시작점 a쪽도 확장
+                    if (!extended)
+                    {
+                        var ka = QKey(a, 100f);
+                        if (map.TryGetValue(ka, out var cand2))
+                        {
+                            for (int i = cand2.Count - 1; i >= 0; i--)
+                            {
+                                int si = cand2[i];
+                                if (!unused.Contains(si)) { cand2.RemoveAt(i); continue; }
+                                var s = segs[si];
+                                if (Math.Abs(a.X - s.A.X) < tol && Math.Abs(a.Y - s.A.Y) < tol)
+                                { poly.Insert(0, s.B); a = s.B; unused.Remove(si); cand2.RemoveAt(i); extended = true; break; }
+                                if (Math.Abs(a.X - s.B.X) < tol && Math.Abs(a.Y - s.B.Y) < tol)
+                                { poly.Insert(0, s.A); a = s.A; unused.Remove(si); cand2.RemoveAt(i); extended = true; break; }
+                            }
+                        }
+                    }
+                }
+
+                polylines.Add(poly.ToArray());
+            }
+
+            return polylines;
+        }
+
+        // 외곽선 수집: 경계는 "두 픽셀 사이" → 반 픽셀(0.5) 보정하여 정확 정렬
+        private static void CollectMaskOutlineOverlaysExact(
+    Bitmap maskGray,          // toOrig (원본 크기 마스크)
+    byte thrByte,             // (byte)(maskThr*255+0.5)
+    Color color,
+    float widthPx,
+    List<OverlayItem> overlaysOut)
+        {
+            if (overlaysOut == null) return;
+
+            int w = maskGray.Width, h = maskGray.Height;
+            var rect = new Rectangle(0, 0, w, h);
+            var data = maskGray.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+
+            try
+            {
+                unsafe
+                {
+                    bool[,] B = new bool[w, h];             // 이진 마스크 (채움과 동일 기준)
+                    byte* basePtr = (byte*)data.Scan0;
+                    int stride = data.Stride;
+
+                    for (int y = 0; y < h; y++)
+                    {
+                        byte* row = basePtr + y * stride;
+                        for (int x = 0; x < w; x++)
+                            B[x, y] = row[x * 4] >= thrByte; // FloatMaskToBitmap가 그레이로 들어왔다는 전제
+                    }
+
+                    // 1) 정수 경계(픽셀 사이의 선이 아니라 "격자선 x, y")에서 on/off가 바뀌는 곳을 선분으로 수집
+                    var segs = new List<(PointF A, PointF B)>();
+
+                    // 수직 경계: (x-1,y) vs (x,y) 가 다르면 x에서 세로선
+                    for (int y = 0; y < h; y++)
+                        for (int x = 1; x < w; x++)
+                            if (B[x - 1, y] != B[x, y])
+                                segs.Add((new PointF(x, y), new PointF(x, y + 1)));
+
+                    // 수평 경계: (x,y-1) vs (x,y) 가 다르면 y에서 가로선
+                    for (int y = 1; y < h; y++)
+                        for (int x = 0; x < w; x++)
+                            if (B[x, y - 1] != B[x, y])
+                                segs.Add((new PointF(x, y), new PointF(x + 1, y)));
+
+                    // 2) 짧은 선분들을 연결해서 긴 폴리라인(폐곡선)으로 (정수 격자이므로 tol=0)
+                    var dict = new Dictionary<(int, int), List<int>>();
+                    for (int i = 0; i < segs.Count; i++)
+                    {
+                        var a = ((int)segs[i].A.X, (int)segs[i].A.Y);
+                        var b = ((int)segs[i].B.X, (int)segs[i].B.Y);
+                        if (!dict.TryGetValue(a, out var la)) dict[a] = la = new List<int>(); la.Add(i);
+                        if (!dict.TryGetValue(b, out var lb)) dict[b] = lb = new List<int>(); lb.Add(i);
+                    }
+
+                    var used = new bool[segs.Count];
+                    var polylines = new List<PointF[]>();
+
+                    for (int i = 0; i < segs.Count; i++)
+                    {
+                        if (used[i]) continue;
+                        used[i] = true;
+
+                        var path = new List<PointF> { segs[i].A, segs[i].B };
+
+                        // 끝점 쪽으로 계속 확장
+                        bool extended = true;
+                        while (extended)
+                        {
+                            extended = false;
+
+                            // 뒤쪽 끝
+                            var end = path[path.Count - 1];
+                            var key = ((int)end.X, (int)end.Y);
+                            if (dict.TryGetValue(key, out var lst))
+                            {
+                                for (int k = lst.Count - 1; k >= 0; k--)
+                                {
+                                    int si = lst[k]; if (used[si]) continue;
+                                    var s = segs[si];
+
+                                    if ((int)s.A.X == (int)end.X && (int)s.A.Y == (int)end.Y)
+                                    { path.Add(s.B); used[si] = true; extended = true; break; }
+                                    if ((int)s.B.X == (int)end.X && (int)s.B.Y == (int)end.Y)
+                                    { path.Add(s.A); used[si] = true; extended = true; break; }
+                                }
+                            }
+
+                            // 앞쪽 끝
+                            if (!extended)
+                            {
+                                var beg = path[0];
+                                var key2 = ((int)beg.X, (int)beg.Y);
+                                if (dict.TryGetValue(key2, out var lst2))
+                                {
+                                    for (int k = lst2.Count - 1; k >= 0; k--)
+                                    {
+                                        int si = lst2[k]; if (used[si]) continue;
+                                        var s = segs[si];
+
+                                        if ((int)s.A.X == (int)beg.X && (int)s.A.Y == (int)beg.Y)
+                                        { path.Insert(0, s.B); used[si] = true; extended = true; break; }
+                                        if ((int)s.B.X == (int)beg.X && (int)s.B.Y == (int)beg.Y)
+                                        { path.Insert(0, s.A); used[si] = true; extended = true; break; }
+                                    }
+                                }
+                            }
+                        }
+
+                        polylines.Add(path.ToArray());
+                    }
+
+                    // 3) 통합 오버레이로 내보내기
+                    foreach (var poly in polylines)
+                    {
+                        overlaysOut.Add(new OverlayItem
+                        {
+                            Kind = OverlayKind.Polyline,
+                            PointsImg = poly,
+                            Closed = true,
+                            StrokeColor = color,
+                            StrokeWidthPx = widthPx,      // 1~2px 권장
+                        });
+                    }
+                }
+            }
+            finally { maskGray.UnlockBits(data); }
+        }
+
+
         public static SegResult Infer(InferenceSession session, Bitmap orig, float conf = 0.9f, float iou = 0.45f, float minBoxAreaRatio = 0.003f, float minMaskAreaRatio = 0.003f, bool discardTouchingBorder = true)
         {
             Log("Infer(session, bitmap) called");
@@ -300,7 +514,7 @@ namespace SmartLabelingApp
         }
 
         // === 완전 분리: 합성만 수행 (원본 + SegResult → 새 Bitmap 반환) ===
-        public static Bitmap Overlay(Bitmap orig, SegResult r, float maskThr = 0.65f, float alpha = 0.45f, bool drawBoxes = false, bool drawScores = true, List<ImageCanvas.InferenceBadge> badgesOut = null)
+        public static Bitmap Overlay(Bitmap orig, SegResult r, float maskThr = 0.65f, float alpha = 0.45f, bool drawBoxes = false, bool drawScores = true, List<SmartLabelingApp.ImageCanvas.OverlayItem> overlaysOut = null)
         {
             if (orig == null) throw new ArgumentNullException(nameof(orig));
             if (r == null) throw new ArgumentNullException(nameof(r));
@@ -354,29 +568,34 @@ namespace SmartLabelingApp
                             AlphaBlendMask(over, toOrig, color, maskThr, alpha);
 
                             byte thrByte = (byte)(maskThr * 255f + 0.5f);
-                            DrawMaskOutline(toOrig, g, color, 2, thrByte);
 
-                            if (drawBoxes)
+                            // 외곽선: 채움과 동일 기준으로, 정확히 맞추기
+                            if (overlaysOut != null)
                             {
-                                using (var pen = new Pen(color, 2))
-                                    g.DrawRectangle(pen, boxOrig);
+                                CollectMaskOutlineOverlaysExact(toOrig, thrByte, color, 2f, overlaysOut);
                             }
 
-                            // === (2) 점수/라벨은 "화면 렌더링" 단계로 넘긴다 ===
-                            if (drawScores && badgesOut != null)
+                            if (drawScores && overlaysOut != null)
                             {
-                                // 표기 문자열: 필요에 따라 클래스명/점수 포맷 변경
-                                string labelText = $"[{d.ClassId}], {d.Score:0.00}";
-                                // 이미지 좌표의 박스 그대로 넘김 (ImageCanvas에서 화면좌표로 변환해서 그림)
-                                badgesOut.Add(new ImageCanvas.InferenceBadge
+                                overlaysOut.Add(new SmartLabelingApp.ImageCanvas.OverlayItem
                                 {
-                                    BoxImg = (RectangleF)boxOrig,
-                                    Text = labelText,
-                                    Accent = color
+                                    Kind = SmartLabelingApp.ImageCanvas.OverlayKind.Badge,
+                                    Text = $"[{d.ClassId}], {d.Score:0.00}",
+                                    BoxImg = boxOrig,
+                                    StrokeColor = color
                                 });
                             }
 
-                            // ※ 더 이상 여기서 g.DrawString/DrawLabel 하지 않는다 (화질 저하 방지)
+                            if (drawBoxes && overlaysOut != null)
+                            {
+                                overlaysOut.Add(new SmartLabelingApp.ImageCanvas.OverlayItem
+                                {
+                                    Kind = SmartLabelingApp.ImageCanvas.OverlayKind.Box,
+                                    BoxImg = boxOrig,
+                                    StrokeColor = color,
+                                    StrokeWidthPx = 3f
+                                });
+                            }
                         }
                     }
                     di++;
@@ -384,6 +603,8 @@ namespace SmartLabelingApp
             }
             return over;
         }
+
+
 
         // 진행률 헬퍼: 퍼센트 상승만 허용
         private static void ReportStep(IProgress<(int percent, string status)> progress, ref int cur, int next, string msg)

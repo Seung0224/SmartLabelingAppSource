@@ -18,7 +18,7 @@ using System.Threading.Tasks;
 using System.Windows.Documents;
 using System.Windows.Forms;
 
-using CanvasBadge = SmartLabelingApp.ImageCanvas.InferenceBadge;
+using CanvasOverlay = SmartLabelingApp.ImageCanvas.OverlayItem;
 
 namespace SmartLabelingApp
 {
@@ -1261,7 +1261,7 @@ namespace SmartLabelingApp
 
         private async void OnPrevClick(object sender, EventArgs e)
         {
-            _canvas.ClearInferenceBadges();
+            _canvas.ClearInferenceOverlays();
             _canvas.Invalidate();
             
             try { NavigateImage(-1); } catch { }
@@ -1270,7 +1270,7 @@ namespace SmartLabelingApp
         }
         private async void OnNextClick(object sender, EventArgs e)
         {
-            _canvas.ClearInferenceBadges();
+            _canvas.ClearInferenceOverlays();
             _canvas.Invalidate();
 
             try { NavigateImage(+1); } catch { }
@@ -3176,6 +3176,7 @@ namespace SmartLabelingApp
 
                 var viewBmp = (Bitmap)_sourceImage.Clone();
                 _canvas.LoadImage(viewBmp);
+                _canvas.ClearInferenceOverlays();
                 _canvas.ZoomToFit();
 
                 _currentImagePath = path;
@@ -3677,7 +3678,7 @@ namespace SmartLabelingApp
         private async Task<bool> RunInferenceAndApplyAsync(CancellationToken token = default)
         {
             Bitmap overlayed = null;
-            List<CanvasBadge> badges = null;
+            List<CanvasOverlay> overlays = null;
 
             using (var srcCopy = (Bitmap)_sourceImage.Clone())
             {
@@ -3687,15 +3688,10 @@ namespace SmartLabelingApp
 
                     var res = YoloSegOnnx.Infer(_onnxSession, srcCopy);
 
-                    badges = new List<CanvasBadge>();
+                    overlays = new List<CanvasOverlay>();
 
                     var swOverlay = System.Diagnostics.Stopwatch.StartNew();
-                    overlayed = YoloSegOnnx.Overlay(
-                        srcCopy, res,
-                        maskThr: 0.65f, alpha: 0.45f,
-                        drawBoxes: false, drawScores: true,
-                        badgesOut: badges
-                    );
+                    overlayed = YoloSegOnnx.Overlay(srcCopy, res, overlaysOut: overlays);
                     swOverlay.Stop();
 
                     AddLog($"Inference 완료: {res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms, overlay={swOverlay.Elapsed.TotalMilliseconds:F0}ms");
@@ -3706,13 +3702,13 @@ namespace SmartLabelingApp
             if (token.IsCancellationRequested || overlayed == null)
                 return false;
 
-            _canvas.ClearInferenceBadges();
+            _canvas.ClearInferenceOverlays();
             var old = _canvas.Image;
             _canvas.Image = overlayed;
             old?.Dispose();
 
-            if (badges != null && badges.Count > 0)
-                _canvas.SetInferenceBadges(badges);
+            if (overlays.Count > 0)
+                _canvas.SetInferenceOverlays(overlays);
 
             _canvas.Invalidate();
             return true;
