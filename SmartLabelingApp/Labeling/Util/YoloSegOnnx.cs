@@ -1,4 +1,6 @@
 ﻿// File: YoloSegOnnx.cs
+using Microsoft.ML.OnnxRuntime;
+using Microsoft.ML.OnnxRuntime.Tensors;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -7,13 +9,19 @@ using System.Drawing.Imaging;
 using System.Linq;
 using System.Text;
 using System.Threading;
-using Microsoft.ML.OnnxRuntime;
-using Microsoft.ML.OnnxRuntime.Tensors;
+using System.Windows.Forms;
 
 namespace SmartLabelingApp
 {
     public static class YoloSegOnnx
     {
+        const int LABEL_BADGE_GAP_PX = 2;
+        const int LABEL_BADGE_PADX = 4;
+        const int LABEL_BADGE_PADY = 3;
+        const int LABEL_BADGE_BORDER_PX = 2;
+        const int LABEL_BADGE_ACCENT_W = 4;
+        const int LABEL_BADGE_WIPE_PX = 1;
+
         // ------- Logging -------
         private static void Log(string msg)
         {
@@ -37,7 +45,76 @@ namespace SmartLabelingApp
         private static string _cachedModelPath = null;
         private static readonly object _sessionLock = new object();
 
+        private static void DrawLabelTagLikeCanvas(Graphics g, Rectangle boxImg, string label, Color accentColor, int imgW, int imgH)
+        {
+            if (string.IsNullOrWhiteSpace(label)) return;
 
+            using (var font = new Font("Segoe UI", 9f, FontStyle.Bold))
+            {
+                // ImageCanvas와 동일하게 TextRenderer 기반 측정
+                var textSz = TextRenderer.MeasureText(label, font, new Size(int.MaxValue, int.MaxValue),
+                                                      TextFormatFlags.NoPadding);
+
+                int innerW = textSz.Width + LABEL_BADGE_PADX * 2
+                           + (LABEL_BADGE_ACCENT_W > 0 ? (LABEL_BADGE_ACCENT_W + LABEL_BADGE_PADX) : 0);
+                int innerH = textSz.Height + LABEL_BADGE_PADY * 2;
+
+                // 박스 하단에 배지 배치 (화면 밖이면 위쪽으로 자동 보정)
+                var tagRect = new Rectangle(
+                    boxImg.Left,
+                    boxImg.Bottom + LABEL_BADGE_GAP_PX,
+                    innerW + LABEL_BADGE_BORDER_PX * 2,
+                    innerH + LABEL_BADGE_BORDER_PX * 2
+                );
+
+                // 오른쪽/아래쪽 경계 보정
+                if (tagRect.Right > imgW) tagRect.X = Math.Max(0, imgW - tagRect.Width - 1);
+                if (tagRect.Bottom > imgH)
+                {
+                    // 아래가 넘치면 박스 위로 올림
+                    tagRect.Y = Math.Max(0, boxImg.Top - LABEL_BADGE_GAP_PX - tagRect.Height);
+                }
+
+                // 배경 ‘닦기’(하얀 여유)
+                if (LABEL_BADGE_WIPE_PX > 0)
+                {
+                    var wipeRect = Rectangle.Inflate(tagRect, LABEL_BADGE_WIPE_PX, LABEL_BADGE_WIPE_PX);
+                    using (var wipe = new SolidBrush(Color.White)) g.FillRectangle(wipe, wipeRect);
+                }
+
+                // 배경
+                using (var bg = new SolidBrush(Color.White)) g.FillRectangle(bg, tagRect);
+
+                // 테두리 (홀수 두께 보정 포함)
+                if (LABEL_BADGE_BORDER_PX > 0)
+                {
+                    using (var pen = new Pen(Color.FromArgb(180, 200, 210), LABEL_BADGE_BORDER_PX))
+                    {
+                        var br = (RectangleF)tagRect;
+                        int bpx = LABEL_BADGE_BORDER_PX;
+                        if ((bpx & 1) == 1)
+                        { br.X += .5f; br.Y += .5f; br.Width -= 1f; br.Height -= 1f; }
+                        g.DrawRectangle(pen, br.X, br.Y, br.Width, br.Height);
+                    }
+                }
+
+                // 안쪽 영역
+                var innerRect = Rectangle.Inflate(tagRect, -LABEL_BADGE_BORDER_PX, -LABEL_BADGE_BORDER_PX);
+
+                // 왼쪽 강조 막대 + 텍스트 시작점
+                int textLeft = innerRect.Left + LABEL_BADGE_PADX;
+                if (LABEL_BADGE_ACCENT_W > 0)
+                {
+                    var accRect = new Rectangle(innerRect.Left, innerRect.Top, LABEL_BADGE_ACCENT_W, innerRect.Height);
+                    using (var acc = new SolidBrush(accentColor)) g.FillRectangle(acc, accRect);
+                    textLeft = accRect.Right + LABEL_BADGE_PADX;
+                }
+
+                var textPt = new Point(textLeft, innerRect.Top + LABEL_BADGE_PADY - 1);
+                TextRenderer.DrawText(g, label, font, textPt, Color.Black,
+                    TextFormatFlags.NoPadding | TextFormatFlags.NoClipping);
+            }
+        }
         private static InferenceSession GetOrCreateSession(string modelPath, out double initMs)
         {
             lock (_sessionLock)
@@ -358,7 +435,8 @@ namespace SmartLabelingApp
                             }
                             if (drawScores)
                             {
-                                DrawLabel(g, boxOrig, $"[{d.ClassId}], Score{d.Score:0.00}", color);
+                                string labelText = $"[{d.ClassId}]  {d.Score:0.00}";  // 필요 시 클래스명으로 치환
+                                DrawLabelTagLikeCanvas(g, boxOrig, labelText, color, orig.Width, orig.Height);
                             }
                         }
                     }
