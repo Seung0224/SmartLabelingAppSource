@@ -18,30 +18,6 @@ namespace SmartLabelingApp
 {
     public static class YoloSegOnnx
     {
-        const int LABEL_BADGE_GAP_PX = 2;
-        const int LABEL_BADGE_PADX = 4;
-        const int LABEL_BADGE_PADY = 3;
-        const int LABEL_BADGE_BORDER_PX = 2;
-        const int LABEL_BADGE_ACCENT_W = 4;
-        const int LABEL_BADGE_WIPE_PX = 1;
-
-        private struct Seg { public PointF A, B; public Seg(PointF a, PointF b) { A = a; B = b; } }
-
-        // 포인트를 키로 묶기 위한 양자화 (연결 시 사용)
-        private static long QKey(PointF p, float scale = 100f)
-        {
-            int xi = (int)Math.Round(p.X * scale);
-            int yi = (int)Math.Round(p.Y * scale);
-            return ((long)xi << 32) ^ (uint)yi;
-        }
-
-        // 입력 텐서/NamedOnnxValue 재사용을 위한 캐시
-        static string _inputName;
-        static int _curNet = 0;
-        static float[] _inBuf;
-        static DenseTensor<float> _tensor;
-        static NamedOnnxValue _nov;
-
         // ------- Logging -------
         private static void Log(string msg)
         {
