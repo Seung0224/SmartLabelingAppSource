@@ -18,8 +18,6 @@ using System.Threading.Tasks;
 using System.Windows.Documents;
 using System.Windows.Forms;
 
-using CanvasOverlay = SmartLabelingApp.ImageCanvas.OverlayItem;
-
 namespace SmartLabelingApp
 {
     public partial class MainForm : Form
@@ -31,8 +29,8 @@ namespace SmartLabelingApp
 
         private const string DEFAULT_MODEL_PATH = @"D:\SLA_Model\SEG.onnx";
         private string _currentModelName = "UNKNOWN";
-        private string _currentRunTypeName = "CPU";
         private System.Threading.CancellationTokenSource _autoInferCts;
+        public  static string _currentRunTypeName = "CPU";
 
         private const int MODEL_HEADER_H = 39;
         private const int MODEL_HEADER_Y = -43;
@@ -1205,6 +1203,8 @@ namespace SmartLabelingApp
             _currentModelName = string.IsNullOrWhiteSpace(modelName) ? "UNKNOWN" : modelName.Trim();
             if (_modelHeaderLabel != null)
                 _modelHeaderLabel.Text = $"DL Model : {_currentModelName}";
+
+            UpdateModelDependentControls();
         }
 
         private void UpdateModelDependentControls()

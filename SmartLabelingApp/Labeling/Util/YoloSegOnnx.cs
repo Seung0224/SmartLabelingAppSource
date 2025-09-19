@@ -902,6 +902,7 @@ namespace SmartLabelingApp
             //    Log("Session created with TensorRT EP.");
             //    EnsureInputBuffers(sess, 640);
             //    TryWarmup(sess, 640);
+            //    SmartLabelingApp.MainForm._currentRunTypeName = "TensorRT EP";
             //    return sess;
             //}
             //catch (Exception ex)
@@ -924,6 +925,8 @@ namespace SmartLabelingApp
                 Log("Session created with CUDA EP.");
                 EnsureInputBuffers(sess, 640);
                 TryWarmup(sess, 640);
+
+                SmartLabelingApp.MainForm._currentRunTypeName = "CUDA EP";
                 return sess;
             }
             catch (Exception ex)
@@ -943,6 +946,8 @@ namespace SmartLabelingApp
                 Log("Session created with DML EP.");
                 EnsureInputBuffers(sess, 640);
                 TryWarmup(sess, 640);
+
+                SmartLabelingApp.MainForm._currentRunTypeName = "DML EP";
                 return sess;
             }
             catch (Exception ex)
@@ -958,6 +963,8 @@ namespace SmartLabelingApp
             var cpu = new InferenceSession(modelPath, soCpu);
             Log("CPU session created.");
             EnsureInputBuffers(cpu, 640);
+
+            SmartLabelingApp.MainForm._currentRunTypeName = "CPU";
             // (CPU에선 Warmup 별 의미 없음) 
             return cpu;
         }
