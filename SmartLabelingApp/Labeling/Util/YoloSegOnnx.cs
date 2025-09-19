@@ -18,6 +18,30 @@ namespace SmartLabelingApp
 {
     public static class YoloSegOnnx
     {
+        const int LABEL_BADGE_GAP_PX = 2;
+        const int LABEL_BADGE_PADX = 4;
+        const int LABEL_BADGE_PADY = 3;
+        const int LABEL_BADGE_BORDER_PX = 2;
+        const int LABEL_BADGE_ACCENT_W = 4;
+        const int LABEL_BADGE_WIPE_PX = 1;
+
+        private struct Seg { public PointF A, B; public Seg(PointF a, PointF b) { A = a; B = b; } }
+
+        // 포인트를 키로 묶기 위한 양자화 (연결 시 사용)
+        private static long QKey(PointF p, float scale = 100f)
+        {
+            int xi = (int)Math.Round(p.X * scale);
+            int yi = (int)Math.Round(p.Y * scale);
+            return ((long)xi << 32) ^ (uint)yi;
+        }
+
+        // 입력 텐서/NamedOnnxValue 재사용을 위한 캐시
+        static string _inputName;
+        static int _curNet = 0;
+        static float[] _inBuf;
+        static DenseTensor<float> _tensor;
+        static NamedOnnxValue _nov;
+
         // ------- Logging -------
         private static void Log(string msg)
         {
@@ -420,149 +444,149 @@ namespace SmartLabelingApp
 
                 tInfer = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
 
-                    for (int oi = 0; oi < outputs.Count; oi++)
-                    {
-                        try
-                        {
-                            var t = outputs.ElementAt(oi).AsTensor<float>();
-                            Log($"  out[{oi}] dims: [{JoinDims(t.Dimensions)}]");
-                        }
-                        catch { Log($"  out[{oi}] not a float tensor?"); }
-                    }
-
-                    // 3) 후처리(Det + Proto 확보) — 합성은 하지 않음
-                    var t3 = outputs.First(v => v.AsTensor<float>().Dimensions.Length == 3).AsTensor<float>();
-                    var t4 = outputs.First(v => v.AsTensor<float>().Dimensions.Length == 4).AsTensor<float>();
-
-                    var d3 = t3.Dimensions;    // [1,37,8400] or [1,8400,37]
-                    var d4 = t4.Dimensions;    // [1, segDim, mh, mw]
-                    int a = d3[1];
-                    int c = d3[2];
-
-                    int segDim = d4[1];
-                    int mh = d4[2];
-                    int mw = d4[3];
-
-                    bool channelsFirst = (a <= 512 && c >= 1000) || (a <= segDim + 4 + 256);
-                    int channels = channelsFirst ? a : c;
-                    int nPred = channelsFirst ? c : a;
-                    int feat = channels;
-
-                    int numClasses = feat - 4 - segDim;
-                    if (numClasses < 0)
-                    {
-                        channelsFirst = !channelsFirst;
-                        channels = channelsFirst ? a : c;
-                        nPred = channelsFirst ? c : a;
-                        feat = channels;
-                        numClasses = feat - 4 - segDim;
-                    }
-
-                    Log($"Parsed heads:");
-                    Log($"  det: channelsFirst={channelsFirst}, channels={channels}, nPred={nPred}, feat={feat}");
-                    Log($"  proto: segDim={segDim}, mh={mh}, mw={mw}");
-                    Log($"  numClasses={numClasses}");
-
-                    if (numClasses <= 0)
-                        throw new InvalidOperationException($"Invalid head layout. feat={feat}, segDim={segDim}");
-
-                    netSize = Math.Max(netSize, Math.Max(mh, mw) * 4);
-
-                    float coordScale = 1f;
-                    {
-                        int sample = Math.Min(nPred, 128);
-                        float maxWH = 0f;
-                        for (int i = 0; i < sample; i++)
-                        {
-                            float ww = channelsFirst ? t3[0, 2, i] : t3[0, i, 2];
-                            float hh = channelsFirst ? t3[0, 3, i] : t3[0, i, 3];
-                            if (ww > maxWH) maxWH = ww;
-                            if (hh > maxWH) maxWH = hh;
-                        }
-                        if (maxWH <= 3.5f) coordScale = netSize;
-                    }
-                    Log($"coordScale={coordScale:F6}");
-
-                    var dets = new List<Det>(256);
-                    for (int i = 0; i < nPred; i++)
-                    {
-                        float x = (channelsFirst ? t3[0, 0, i] : t3[0, i, 0]) * coordScale;
-                        float y = (channelsFirst ? t3[0, 1, i] : t3[0, i, 1]) * coordScale;
-                        float w = (channelsFirst ? t3[0, 2, i] : t3[0, i, 2]) * coordScale;
-                        float h = (channelsFirst ? t3[0, 3, i] : t3[0, i, 3]) * coordScale;
-
-                        int bestC = 0; float bestS = 0f;
-                        for (int cidx = 0; cidx < numClasses; cidx++)
-                        {
-                            float raw = channelsFirst
-                                ? t3[0, 4 + cidx, i]
-                                : t3[0, i, 4 + cidx];
-
-                            float s = (raw < 0f || raw > 1f) ? Sigmoid(raw) : raw;
-                            if (s > bestS) { bestS = s; bestC = cidx; }
-                        }
-                        if (bestS < conf) continue;
-
-                        var coeff = new float[segDim];
-                        int baseIdx = 4 + numClasses;
-                        for (int k = 0; k < segDim; k++)
-                        {
-                            coeff[k] = channelsFirst
-                                ? t3[0, baseIdx + k, i]
-                                : t3[0, i, baseIdx + k];
-                        }
-
-                        float l = x - w / 2f, t = y - h / 2f, r = x + w / 2f, btm = y + h / 2f;
-
-                        dets.Add(new Det
-                        {
-                            Box = new RectangleF(l, t, r - l, btm - t),
-                            Score = bestS,
-                            ClassId = bestC,
-                            Coeff = coeff
-                        });
-                    }
-                    Log($"Detections after conf filter: {dets.Count}");
-
-                    if (dets.Count > 0)
-                        dets = Nms(dets, iou);
-                    Log($"Detections after NMS (iou={iou}): {dets.Count}");
-
-                    tPost = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
-
-                    // Proto 보관 (합성 단계에서 사용)
-                    var protoFlat = t4.ToArray(); // [1, segDim, mh, mw] → 평탄화
-
-                    var res = new SegResult
-                    {
-                        NetSize = netSize,
-                        Scale = scale,
-                        PadX = padX,
-                        PadY = padY,
-                        Resized = resized,
-                        OrigSize = orig.Size,
-
-                        Dets = dets,
-                        SegDim = segDim,
-                        MaskH = mh,
-                        MaskW = mw,
-                        ProtoFlat = protoFlat,
-
-                        SessionMs = tSession,
-                        PreMs = tPre,
-                        InferMs = tInfer,
-                        PostMs = tPost,
-                        TotalMs = sw.Elapsed.TotalMilliseconds
-                    };
-
-                    return res;
-                }
-                finally
+                for (int oi = 0; oi < outputs.Count; oi++)
                 {
-                    if (outputs != null) outputs.Dispose();
+                    try
+                    {
+                        var t = outputs.ElementAt(oi).AsTensor<float>();
+                        Log($"  out[{oi}] dims: [{JoinDims(t.Dimensions)}]");
+                    }
+                    catch { Log($"  out[{oi}] not a float tensor?"); }
                 }
+
+                // 3) 후처리(Det + Proto 확보) — 합성은 하지 않음
+                var t3 = outputs.First(v => v.AsTensor<float>().Dimensions.Length == 3).AsTensor<float>();
+                var t4 = outputs.First(v => v.AsTensor<float>().Dimensions.Length == 4).AsTensor<float>();
+
+                var d3 = t3.Dimensions;    // [1,37,8400] or [1,8400,37]
+                var d4 = t4.Dimensions;    // [1, segDim, mh, mw]
+                int a = d3[1];
+                int c = d3[2];
+
+                int segDim = d4[1];
+                int mh = d4[2];
+                int mw = d4[3];
+
+                bool channelsFirst = (a <= 512 && c >= 1000) || (a <= segDim + 4 + 256);
+                int channels = channelsFirst ? a : c;
+                int nPred = channelsFirst ? c : a;
+                int feat = channels;
+
+                int numClasses = feat - 4 - segDim;
+                if (numClasses < 0)
+                {
+                    channelsFirst = !channelsFirst;
+                    channels = channelsFirst ? a : c;
+                    nPred = channelsFirst ? c : a;
+                    feat = channels;
+                    numClasses = feat - 4 - segDim;
+                }
+
+                Log($"Parsed heads:");
+                Log($"  det: channelsFirst={channelsFirst}, channels={channels}, nPred={nPred}, feat={feat}");
+                Log($"  proto: segDim={segDim}, mh={mh}, mw={mw}");
+                Log($"  numClasses={numClasses}");
+
+                if (numClasses <= 0)
+                    throw new InvalidOperationException($"Invalid head layout. feat={feat}, segDim={segDim}");
+
+                netSize = Math.Max(netSize, Math.Max(mh, mw) * 4);
+
+                float coordScale = 1f;
+                {
+                    int sample = Math.Min(nPred, 128);
+                    float maxWH = 0f;
+                    for (int i = 0; i < sample; i++)
+                    {
+                        float ww = channelsFirst ? t3[0, 2, i] : t3[0, i, 2];
+                        float hh = channelsFirst ? t3[0, 3, i] : t3[0, i, 3];
+                        if (ww > maxWH) maxWH = ww;
+                        if (hh > maxWH) maxWH = hh;
+                    }
+                    if (maxWH <= 3.5f) coordScale = netSize;
+                }
+                Log($"coordScale={coordScale:F6}");
+
+                var dets = new List<Det>(256);
+                for (int i = 0; i < nPred; i++)
+                {
+                    float x = (channelsFirst ? t3[0, 0, i] : t3[0, i, 0]) * coordScale;
+                    float y = (channelsFirst ? t3[0, 1, i] : t3[0, i, 1]) * coordScale;
+                    float w = (channelsFirst ? t3[0, 2, i] : t3[0, i, 2]) * coordScale;
+                    float h = (channelsFirst ? t3[0, 3, i] : t3[0, i, 3]) * coordScale;
+
+                    int bestC = 0; float bestS = 0f;
+                    for (int cidx = 0; cidx < numClasses; cidx++)
+                    {
+                        float raw = channelsFirst
+                            ? t3[0, 4 + cidx, i]
+                            : t3[0, i, 4 + cidx];
+
+                        float s = (raw < 0f || raw > 1f) ? Sigmoid(raw) : raw;
+                        if (s > bestS) { bestS = s; bestC = cidx; }
+                    }
+                    if (bestS < conf) continue;
+
+                    var coeff = new float[segDim];
+                    int baseIdx = 4 + numClasses;
+                    for (int k = 0; k < segDim; k++)
+                    {
+                        coeff[k] = channelsFirst
+                            ? t3[0, baseIdx + k, i]
+                            : t3[0, i, baseIdx + k];
+                    }
+
+                    float l = x - w / 2f, t = y - h / 2f, r = x + w / 2f, btm = y + h / 2f;
+
+                    dets.Add(new Det
+                    {
+                        Box = new RectangleF(l, t, r - l, btm - t),
+                        Score = bestS,
+                        ClassId = bestC,
+                        Coeff = coeff
+                    });
+                }
+                Log($"Detections after conf filter: {dets.Count}");
+
+                if (dets.Count > 0)
+                    dets = Nms(dets, iou);
+                Log($"Detections after NMS (iou={iou}): {dets.Count}");
+
+                tPost = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
+
+                // Proto 보관 (합성 단계에서 사용)
+                var protoFlat = t4.ToArray(); // [1, segDim, mh, mw] → 평탄화
+
+                var res = new SegResult
+                {
+                    NetSize = netSize,
+                    Scale = scale,
+                    PadX = padX,
+                    PadY = padY,
+                    Resized = resized,
+                    OrigSize = orig.Size,
+
+                    Dets = dets,
+                    SegDim = segDim,
+                    MaskH = mh,
+                    MaskW = mw,
+                    ProtoFlat = protoFlat,
+
+                    SessionMs = tSession,
+                    PreMs = tPre,
+                    InferMs = tInfer,
+                    PostMs = tPost,
+                    TotalMs = sw.Elapsed.TotalMilliseconds
+                };
+
+                return res;
             }
-        
+            finally
+            {
+                if (outputs != null) outputs.Dispose();
+            }
+        }
+
 
         // === 완전 분리: 합성만 수행 (원본 + SegResult → 새 Bitmap 반환) ===
         public static Bitmap Overlay(Bitmap orig, SegResult r, float maskThr = 0.65f, float alpha = 0.45f, bool drawBoxes = false, bool drawScores = true, List<SmartLabelingApp.ImageCanvas.OverlayItem> overlaysOut = null)
@@ -631,7 +655,7 @@ namespace SmartLabelingApp
                                 overlaysOut.Add(new SmartLabelingApp.ImageCanvas.OverlayItem
                                 {
                                     Kind = SmartLabelingApp.ImageCanvas.OverlayKind.Badge,
-                                    Text = $"[{d.ClassId}]: {d.Score:0.00}",
+                                    Text = $"[{d.ClassId}], {d.Score:0.00}",
                                     BoxImg = boxOrig,
                                     StrokeColor = color
                                 });
