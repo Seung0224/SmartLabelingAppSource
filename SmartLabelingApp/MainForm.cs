@@ -15,7 +15,10 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Documents;
 using System.Windows.Forms;
+
+using CanvasOverlay = SmartLabelingApp.ImageCanvas.OverlayItem;
 
 namespace SmartLabelingApp
 {
@@ -28,18 +31,22 @@ namespace SmartLabelingApp
 
         private const string DEFAULT_MODEL_PATH = @"D:\SLA_Model\SEG.onnx";
         private string _currentModelName = "UNKNOWN";
+        private string _currentRunTypeName = "CPU";
         private System.Threading.CancellationTokenSource _autoInferCts;
 
         private const int MODEL_HEADER_H = 39;
         private const int MODEL_HEADER_Y = -43;
         private const int MODEL_HEADER_GAP = 4;
 
+        private const int RUNTYPE_HEADER_H = 39;
+        private const int RUNTYPE_HEADER_Y = -43;
+
         private const int HOTKEY_PANEL_X = -4;
         private const int HOTKEY_PANEL_Y = -46;
         private const int HOTKEY_PANEL_W = 1606;
         private const int HOTKEY_PANEL_H = 40;
         private const int HOTKEY_PANEL_RADIUS = 8;
-        private static readonly Color HOTKEY_PANEL_FILL = Color.White;
+        private static readonly Color HOTKEY_PANEL_FILL = Color.LightSkyBlue;
         private static readonly Color HOTKEY_PANEL_BORDER = Color.LightGray;
 
 
@@ -154,6 +161,10 @@ namespace SmartLabelingApp
 
         private Guna2Panel _modelHeaderPanel;
         private Label _modelHeaderLabel;
+
+        private Guna2Panel _runtypeHeaderPanel;
+        private Label _runtypeHeaderLabel;
+
 
 
         private Guna2Panel _rightRail;
@@ -811,6 +822,8 @@ namespace SmartLabelingApp
 
             _leftDock.Controls.Add(leftContent);
             CreateModelHeaderPanel("UNKNOWN");
+            CreateRunTypeHeaderPanel("CPU");
+
             UpdateModelDependentControls();
 
             this.Shown += async (s, e) => await TryAutoLoadDefaultModelAsync();
@@ -1039,7 +1052,7 @@ namespace SmartLabelingApp
             _logPanel = new Guna.UI2.WinForms.Guna2Panel
             {
                 BorderRadius = HOTKEY_PANEL_RADIUS,
-                FillColor = HOTKEY_PANEL_FILL,
+                FillColor = Color.White,
                 BorderColor = HOTKEY_PANEL_BORDER,
                 BorderThickness = 2,
                 BackColor = Color.Transparent,
@@ -1054,7 +1067,7 @@ namespace SmartLabelingApp
                 Size = new Size(LOG_WIDTH - 10, LOG_HEIGHT - 10), // 패널 크기보다 작게
                 BorderStyle = BorderStyle.None,
                 Font = new Font("Segoe UI", 9f, FontStyle.Regular),
-                BackColor = HOTKEY_PANEL_FILL,
+                BackColor = Color.White,
                 ForeColor = Color.Black
             };
 
@@ -1127,8 +1140,8 @@ namespace SmartLabelingApp
                 Height = MODEL_HEADER_H,
                 BorderRadius = 8,
                 BorderThickness = 2,
-                BorderColor = Color.Silver,
-                FillColor = Color.FromArgb(235, 235, 240),
+                BorderColor = Color.LightGray,
+                FillColor = Color.CornflowerBlue,
                 Padding = new Padding(8, 4, 8, 4),
                 BackColor = Color.Transparent
             };
@@ -1137,7 +1150,7 @@ namespace SmartLabelingApp
             {
                 AutoSize = false,
                 Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft,
+                TextAlign = ContentAlignment.MiddleCenter,
                 Font = new Font("Segoe UI", 9f, FontStyle.Bold),
                 ForeColor = Color.Black,
                 BackColor = Color.Transparent
@@ -1148,13 +1161,50 @@ namespace SmartLabelingApp
             _modelHeaderPanel.BringToFront();
         }
 
+        private void CreateRunTypeHeaderPanel(string initialName)
+        {
+            if (_runtypeHeaderPanel != null && !_runtypeHeaderPanel.IsDisposed) return;
+
+            _runtypeHeaderPanel = new Guna.UI2.WinForms.Guna2Panel
+            {
+
+                Parent = _rightRail,
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+                Height = RUNTYPE_HEADER_H,
+                BorderRadius = 8,
+                BorderThickness = 2,
+                BorderColor = Color.LightGray,
+                FillColor = Color.LightCyan,
+                Padding = new Padding(8, 4, 8, 4),
+                BackColor = Color.Transparent
+            };
+
+            _runtypeHeaderLabel = new Label
+            {
+                AutoSize = false,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+                ForeColor = Color.Black,
+                BackColor = Color.Transparent
+            };
+            _runtypeHeaderPanel.Controls.Add(_runtypeHeaderLabel);
+
+            SetRuntypeHeader(initialName);
+            _runtypeHeaderPanel.BringToFront();
+        }
+        private void SetRuntypeHeader(string modelName)
+        {
+            _currentRunTypeName = string.IsNullOrWhiteSpace(modelName) ? "CPU" : modelName.Trim();
+            if (_runtypeHeaderLabel != null)
+                _runtypeHeaderLabel.Text = $"{_currentRunTypeName}";
+        }
+
         private void SetModelHeader(string modelName)
         {
             _currentModelName = string.IsNullOrWhiteSpace(modelName) ? "UNKNOWN" : modelName.Trim();
             if (_modelHeaderLabel != null)
                 _modelHeaderLabel.Text = $"DL Model : {_currentModelName}";
-
-            UpdateModelDependentControls();
         }
 
         private void UpdateModelDependentControls()
@@ -1258,12 +1308,18 @@ namespace SmartLabelingApp
 
         private async void OnPrevClick(object sender, EventArgs e)
         {
+            _canvas.ClearInferenceOverlays();
+            _canvas.Invalidate();
+            
             try { NavigateImage(-1); } catch { }
             await AutoInferIfEnabledAsync();
             _canvas?.Focus();
         }
         private async void OnNextClick(object sender, EventArgs e)
         {
+            _canvas.ClearInferenceOverlays();
+            _canvas.Invalidate();
+
             try { NavigateImage(+1); } catch { }
             await AutoInferIfEnabledAsync();
             _canvas?.Focus();
@@ -1801,6 +1857,18 @@ namespace SmartLabelingApp
 
                     int bottomSpace = _rightRail.ClientSize.Height - _rightToolDock3.Top;
                     _rightToolDock3.Height = bottomSpace;
+                }
+
+
+                if (_runtypeHeaderPanel != null)
+                {
+                    int x = _rightRail.Padding.Left;
+                    int y = _rightRail.Padding.Top + RUNTYPE_HEADER_Y;
+                    int w = Math.Max(20, _rightRail.ClientSize.Width - _rightRail.Padding.Horizontal);
+                    int h = RUNTYPE_HEADER_H;
+
+                    _runtypeHeaderPanel.SetBounds(x, y, w, h);
+                    _runtypeHeaderPanel.BringToFront();
                 }
 
 
@@ -3167,6 +3235,7 @@ namespace SmartLabelingApp
 
                 var viewBmp = (Bitmap)_sourceImage.Clone();
                 _canvas.LoadImage(viewBmp);
+                _canvas.ClearInferenceOverlays();
                 _canvas.ZoomToFit();
 
                 _currentImagePath = path;
@@ -3664,11 +3733,10 @@ namespace SmartLabelingApp
                 }.Show();
             }
         }
-
         // 공용: 원본(_sourceImage)로 추론 + 오버레이 생성 + 화면 적용까지 한 번에 수행
         private async Task<bool> RunInferenceAndApplyAsync(CancellationToken token = default)
         {
-            Bitmap overlayed = null;
+            YoloSegOnnx.OverlayResult result = default;
 
             using (var srcCopy = (Bitmap)_sourceImage.Clone())
             {
@@ -3677,25 +3745,26 @@ namespace SmartLabelingApp
                     if (token.IsCancellationRequested) return;
 
                     var res = YoloSegOnnx.Infer(_onnxSession, srcCopy);
+
                     var swOverlay = System.Diagnostics.Stopwatch.StartNew();
-                    overlayed = YoloSegOnnx.Overlay(srcCopy, res);
+                    result = YoloSegOnnx.Render(srcCopy, res);
                     swOverlay.Stop();
-                    
+
                     AddLog($"Inference 완료: {res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms, overlay={swOverlay.Elapsed.TotalMilliseconds:F0}ms");
                     AddLog($"총합 ≈ {(res.PreMs + res.InferMs + res.PostMs + swOverlay.Elapsed.TotalMilliseconds):F0}ms");
                 }, token);
             }
 
-            if (token.IsCancellationRequested || overlayed == null)
+            if (token.IsCancellationRequested || result.Image == null)
                 return false;
 
-            var old = _canvas.Image;
-            _canvas.Image = overlayed;
-            old?.Dispose();
-            _canvas.Invalidate();
+            // 한 줄로 적용 ✨
+            _canvas.SetImageAndOverlays(result.Image, result.Overlays);
 
             return true;
         }
+
+
 
         private async void OnInferClick(object sender, EventArgs e)
         {

@@ -1,19 +1,47 @@
 ﻿// File: YoloSegOnnx.cs
+using Microsoft.ML.OnnxRuntime;
+using Microsoft.ML.OnnxRuntime.Tensors;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading;
-using Microsoft.ML.OnnxRuntime;
-using Microsoft.ML.OnnxRuntime.Tensors;
+using System.Windows.Forms;
+using static SmartLabelingApp.ImageCanvas;
 
 namespace SmartLabelingApp
 {
     public static class YoloSegOnnx
     {
+        const int LABEL_BADGE_GAP_PX = 2;
+        const int LABEL_BADGE_PADX = 4;
+        const int LABEL_BADGE_PADY = 3;
+        const int LABEL_BADGE_BORDER_PX = 2;
+        const int LABEL_BADGE_ACCENT_W = 4;
+        const int LABEL_BADGE_WIPE_PX = 1;
+
+        private struct Seg { public PointF A, B; public Seg(PointF a, PointF b) { A = a; B = b; } }
+
+        // 포인트를 키로 묶기 위한 양자화 (연결 시 사용)
+        private static long QKey(PointF p, float scale = 100f)
+        {
+            int xi = (int)Math.Round(p.X * scale);
+            int yi = (int)Math.Round(p.Y * scale);
+            return ((long)xi << 32) ^ (uint)yi;
+        }
+
+        // 입력 텐서/NamedOnnxValue 재사용을 위한 캐시
+        static string _inputName;
+        static int _curNet = 0;
+        static float[] _inBuf;
+        static DenseTensor<float> _tensor;
+        static NamedOnnxValue _nov;
+
         // ------- Logging -------
         private static void Log(string msg)
         {
@@ -36,6 +64,76 @@ namespace SmartLabelingApp
         private static InferenceSession _cachedSession = null;
         private static string _cachedModelPath = null;
         private static readonly object _sessionLock = new object();
+
+
+        // (A) 버퍼 준비/교체 (netSize 바뀌면 새로 잡음)
+        static void EnsureInputBuffers(InferenceSession s, int net)
+        {
+            if (_tensor != null && _curNet == net) return;
+
+            _inputName = s.InputMetadata.Keys.First();
+            _inBuf = new float[1 * 3 * net * net];
+            _tensor = new DenseTensor<float>(_inBuf, new[] { 1, 3, net, net });
+
+            _nov = NamedOnnxValue.CreateFromTensor(_inputName, _tensor);
+
+            _curNet = net;
+        }
+
+        // (B) 비트맵을 레터박스 후 NCHW float[0..1]로 채우기
+        static void FillTensorFromBitmap(Bitmap src, int net,
+            out float scale, out int padX, out int padY, out Size resized)
+        {
+            int W = src.Width, H = src.Height;
+            scale = Math.Min((float)net / W, (float)net / H);
+            int rw = (int)Math.Round(W * scale);
+            int rh = (int)Math.Round(H * scale);
+            padX = (net - rw) / 2;
+            padY = (net - rh) / 2;
+            resized = new Size(rw, rh);
+
+            // 레터박스된 이미지를 임시 비트맵에 그린 뒤 LockBits로 읽기
+            var tmp = new Bitmap(net, net, PixelFormat.Format24bppRgb);
+            using (var g = Graphics.FromImage(tmp))
+            {
+                g.Clear(Color.Black); // 필요하면 (114,114,114)
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Bilinear;
+                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+                g.DrawImage(src, padX, padY, rw, rh);
+            }
+
+            var rect = new Rectangle(0, 0, net, net);
+            var bd = tmp.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+            try
+            {
+                unsafe
+                {
+                    byte* p0 = (byte*)bd.Scan0;
+                    int stride = bd.Stride;
+                    float inv255 = 1f / 255f;
+                    int plane = net * net;
+
+                    for (int y = 0; y < net; y++)
+                    {
+                        byte* row = p0 + y * stride;
+                        for (int x = 0; x < net; x++)
+                        {
+                            // BGR → NCHW(R,G,B)
+                            byte b = row[x * 3 + 0];
+                            byte g = row[x * 3 + 1];
+                            byte r = row[x * 3 + 2];
+
+                            int idx = y * net + x;
+                            _inBuf[0 * plane + idx] = r * inv255;
+                            _inBuf[1 * plane + idx] = g * inv255;
+                            _inBuf[2 * plane + idx] = b * inv255;
+                        }
+                    }
+                }
+            }
+            finally { tmp.UnlockBits(bd); }
+        }
+
 
 
         private static InferenceSession GetOrCreateSession(string modelPath, out double initMs)
@@ -98,6 +196,209 @@ namespace SmartLabelingApp
             public int ClassId;
             public float[] Coeff;    // seg_dim
         }
+
+        private static List<PointF[]> ChainSegmentsToPolylines(List<Seg> segs, float tol = 0.01f)
+        {
+            var unused = new HashSet<int>(Enumerable.Range(0, segs.Count));
+            var map = new Dictionary<long, List<int>>();
+
+            void addEnd(PointF p, int idx)
+            {
+                var k = QKey(p, 100f);
+                if (!map.TryGetValue(k, out var lst)) map[k] = lst = new List<int>();
+                lst.Add(idx);
+            }
+
+            for (int i = 0; i < segs.Count; i++) { addEnd(segs[i].A, i); addEnd(segs[i].B, i); }
+
+            var polylines = new List<PointF[]>();
+
+            while (unused.Count > 0)
+            {
+                int seed = unused.First();
+                unused.Remove(seed);
+
+                var a = segs[seed].A; var b = segs[seed].B;
+                var poly = new List<PointF> { a, b };
+
+                // 한쪽 끝을 계속 확장
+                bool extended = true;
+                while (extended)
+                {
+                    extended = false;
+
+                    // 끝점 b에서 이어지는 선분 찾기
+                    var kb = QKey(b, 100f);
+                    if (map.TryGetValue(kb, out var cand))
+                    {
+                        for (int i = cand.Count - 1; i >= 0; i--)
+                        {
+                            int si = cand[i];
+                            if (!unused.Contains(si)) { cand.RemoveAt(i); continue; }
+                            var s = segs[si];
+                            // b==s.A 이면 s.B로, b==s.B 이면 s.A로
+                            if (Math.Abs(b.X - s.A.X) < tol && Math.Abs(b.Y - s.A.Y) < tol)
+                            { poly.Add(s.B); b = s.B; unused.Remove(si); extended = true; cand.RemoveAt(i); break; }
+                            if (Math.Abs(b.X - s.B.X) < tol && Math.Abs(b.Y - s.B.Y) < tol)
+                            { poly.Add(s.A); b = s.A; unused.Remove(si); extended = true; cand.RemoveAt(i); break; }
+                        }
+                    }
+
+                    // 시작점 a쪽도 확장
+                    if (!extended)
+                    {
+                        var ka = QKey(a, 100f);
+                        if (map.TryGetValue(ka, out var cand2))
+                        {
+                            for (int i = cand2.Count - 1; i >= 0; i--)
+                            {
+                                int si = cand2[i];
+                                if (!unused.Contains(si)) { cand2.RemoveAt(i); continue; }
+                                var s = segs[si];
+                                if (Math.Abs(a.X - s.A.X) < tol && Math.Abs(a.Y - s.A.Y) < tol)
+                                { poly.Insert(0, s.B); a = s.B; unused.Remove(si); cand2.RemoveAt(i); extended = true; break; }
+                                if (Math.Abs(a.X - s.B.X) < tol && Math.Abs(a.Y - s.B.Y) < tol)
+                                { poly.Insert(0, s.A); a = s.A; unused.Remove(si); cand2.RemoveAt(i); extended = true; break; }
+                            }
+                        }
+                    }
+                }
+
+                polylines.Add(poly.ToArray());
+            }
+
+            return polylines;
+        }
+
+        // 외곽선 수집: 경계는 "두 픽셀 사이" → 반 픽셀(0.5) 보정하여 정확 정렬
+        private static void CollectMaskOutlineOverlaysExact(
+    Bitmap maskGray,          // toOrig (원본 크기 마스크)
+    byte thrByte,             // (byte)(maskThr*255+0.5)
+    Color color,
+    float widthPx,
+    List<OverlayItem> overlaysOut)
+        {
+            if (overlaysOut == null) return;
+
+            int w = maskGray.Width, h = maskGray.Height;
+            var rect = new Rectangle(0, 0, w, h);
+            var data = maskGray.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+
+            try
+            {
+                unsafe
+                {
+                    bool[,] B = new bool[w, h];             // 이진 마스크 (채움과 동일 기준)
+                    byte* basePtr = (byte*)data.Scan0;
+                    int stride = data.Stride;
+
+                    for (int y = 0; y < h; y++)
+                    {
+                        byte* row = basePtr + y * stride;
+                        for (int x = 0; x < w; x++)
+                            B[x, y] = row[x * 4] >= thrByte; // FloatMaskToBitmap가 그레이로 들어왔다는 전제
+                    }
+
+                    // 1) 정수 경계(픽셀 사이의 선이 아니라 "격자선 x, y")에서 on/off가 바뀌는 곳을 선분으로 수집
+                    var segs = new List<(PointF A, PointF B)>();
+
+                    // 수직 경계: (x-1,y) vs (x,y) 가 다르면 x에서 세로선
+                    for (int y = 0; y < h; y++)
+                        for (int x = 1; x < w; x++)
+                            if (B[x - 1, y] != B[x, y])
+                                segs.Add((new PointF(x, y), new PointF(x, y + 1)));
+
+                    // 수평 경계: (x,y-1) vs (x,y) 가 다르면 y에서 가로선
+                    for (int y = 1; y < h; y++)
+                        for (int x = 0; x < w; x++)
+                            if (B[x, y - 1] != B[x, y])
+                                segs.Add((new PointF(x, y), new PointF(x + 1, y)));
+
+                    // 2) 짧은 선분들을 연결해서 긴 폴리라인(폐곡선)으로 (정수 격자이므로 tol=0)
+                    var dict = new Dictionary<(int, int), List<int>>();
+                    for (int i = 0; i < segs.Count; i++)
+                    {
+                        var a = ((int)segs[i].A.X, (int)segs[i].A.Y);
+                        var b = ((int)segs[i].B.X, (int)segs[i].B.Y);
+                        if (!dict.TryGetValue(a, out var la)) dict[a] = la = new List<int>(); la.Add(i);
+                        if (!dict.TryGetValue(b, out var lb)) dict[b] = lb = new List<int>(); lb.Add(i);
+                    }
+
+                    var used = new bool[segs.Count];
+                    var polylines = new List<PointF[]>();
+
+                    for (int i = 0; i < segs.Count; i++)
+                    {
+                        if (used[i]) continue;
+                        used[i] = true;
+
+                        var path = new List<PointF> { segs[i].A, segs[i].B };
+
+                        // 끝점 쪽으로 계속 확장
+                        bool extended = true;
+                        while (extended)
+                        {
+                            extended = false;
+
+                            // 뒤쪽 끝
+                            var end = path[path.Count - 1];
+                            var key = ((int)end.X, (int)end.Y);
+                            if (dict.TryGetValue(key, out var lst))
+                            {
+                                for (int k = lst.Count - 1; k >= 0; k--)
+                                {
+                                    int si = lst[k]; if (used[si]) continue;
+                                    var s = segs[si];
+
+                                    if ((int)s.A.X == (int)end.X && (int)s.A.Y == (int)end.Y)
+                                    { path.Add(s.B); used[si] = true; extended = true; break; }
+                                    if ((int)s.B.X == (int)end.X && (int)s.B.Y == (int)end.Y)
+                                    { path.Add(s.A); used[si] = true; extended = true; break; }
+                                }
+                            }
+
+                            // 앞쪽 끝
+                            if (!extended)
+                            {
+                                var beg = path[0];
+                                var key2 = ((int)beg.X, (int)beg.Y);
+                                if (dict.TryGetValue(key2, out var lst2))
+                                {
+                                    for (int k = lst2.Count - 1; k >= 0; k--)
+                                    {
+                                        int si = lst2[k]; if (used[si]) continue;
+                                        var s = segs[si];
+
+                                        if ((int)s.A.X == (int)beg.X && (int)s.A.Y == (int)beg.Y)
+                                        { path.Insert(0, s.B); used[si] = true; extended = true; break; }
+                                        if ((int)s.B.X == (int)beg.X && (int)s.B.Y == (int)beg.Y)
+                                        { path.Insert(0, s.A); used[si] = true; extended = true; break; }
+                                    }
+                                }
+                            }
+                        }
+
+                        polylines.Add(path.ToArray());
+                    }
+
+                    // 3) 통합 오버레이로 내보내기
+                    foreach (var poly in polylines)
+                    {
+                        overlaysOut.Add(new OverlayItem
+                        {
+                            Kind = OverlayKind.Polyline,
+                            PointsImg = poly,
+                            Closed = true,
+                            StrokeColor = color,
+                            StrokeWidthPx = widthPx,      // 1~2px 권장
+                        });
+                    }
+                }
+            }
+            finally { maskGray.UnlockBits(data); }
+        }
+
+
         public static SegResult Infer(InferenceSession session, Bitmap orig, float conf = 0.9f, float iou = 0.45f, float minBoxAreaRatio = 0.003f, float minMaskAreaRatio = 0.003f, bool discardTouchingBorder = true)
         {
             Log("Infer(session, bitmap) called");
@@ -125,28 +426,23 @@ namespace SmartLabelingApp
             int netSize = Math.Max(netH, netW);
             Log($"Chosen netSize: {netSize}");
 
+            EnsureInputBuffers(session, netSize);
+            FillTensorFromBitmap(orig, netSize, out float scale, out int padX, out int padY, out Size resized);
+
             // 1) 전처리
-            using (var boxed = Letterbox(orig, netSize, out float scale, out int padX, out int padY, out Size resized))
+            Log($"Letterbox: scale={scale:F6}, padX={padX}, padY={padY}, resized={resized.Width}x{resized.Height}");
+            Log($"Input tensor ready: [1,3,{netSize},{netSize}]");
+
+            tPre = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
+
+            // 2) 추론
+            IDisposableReadOnlyCollection<DisposableNamedOnnxValue> outputs = null;
+            try
             {
-                Log($"Letterbox: scale={scale:F6}, padX={padX}, padY={padY}, resized={resized.Width}x{resized.Height}");
-                var input = ToCHWTensor(boxed);
-                Log($"Input tensor ready: [1,3,{boxed.Height},{boxed.Width}]");
+                outputs = session.Run(new[] { _nov });
+                Log($"session.Run() returned {outputs.Count} outputs");
 
-                tPre = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
-
-                // 2) 추론
-                IDisposableReadOnlyCollection<DisposableNamedOnnxValue> outputs = null;
-                try
-                {
-                    var inputsList = new List<NamedOnnxValue>(1)
-            {
-                NamedOnnxValue.CreateFromTensor<float>(inputName, input)
-            };
-
-                    outputs = session.Run(inputsList);
-                    Log($"session.Run() returned {outputs.Count} outputs");
-
-                    tInfer = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
+                tInfer = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
 
                     for (int oi = 0; oi < outputs.Count; oi++)
                     {
@@ -290,10 +586,10 @@ namespace SmartLabelingApp
                     if (outputs != null) outputs.Dispose();
                 }
             }
-        }
+        
 
         // === 완전 분리: 합성만 수행 (원본 + SegResult → 새 Bitmap 반환) ===
-        public static Bitmap Overlay(Bitmap orig, SegResult r, float maskThr = 0.65f, float alpha = 0.45f, bool drawBoxes = false, bool drawScores = true)
+        public static Bitmap Overlay(Bitmap orig, SegResult r, float maskThr = 0.65f, float alpha = 0.45f, bool drawBoxes = false, bool drawScores = true, List<SmartLabelingApp.ImageCanvas.OverlayItem> overlaysOut = null)
         {
             if (orig == null) throw new ArgumentNullException(nameof(orig));
             if (r == null) throw new ArgumentNullException(nameof(r));
@@ -306,16 +602,15 @@ namespace SmartLabelingApp
                 if (r.Dets == null || r.Dets.Count == 0)
                     return over;
 
-                // proto accessor
                 int segDim = r.SegDim;
                 int mh = r.MaskH, mw = r.MaskW;
-                var proto = r.ProtoFlat; // 길이 = segDim * mh * mw
+                var proto = r.ProtoFlat;
                 Func<int, int, int, float> ProtoAt = (k, y, x) => proto[(k * mh + y) * mw + x];
 
                 int di = 0;
                 foreach (var d in r.Dets)
                 {
-                    // 1) coeff ⋅ proto → mask(mh×mw), sigmoid
+                    // === (1) 마스크 처리 기존 그대로 ===
                     var mask = new float[mh * mw];
                     for (int yy = 0; yy < mh; yy++)
                     {
@@ -329,7 +624,6 @@ namespace SmartLabelingApp
                         }
                     }
 
-                    // 2) 네트 좌표 → 원본 좌표로 업샘플/크롭/리사이즈
                     using (var maskBmp = FloatMaskToBitmap(mask, mw, mh))
                     using (var up = ResizeBitmap(maskBmp, r.NetSize, r.NetSize))
                     {
@@ -349,16 +643,33 @@ namespace SmartLabelingApp
                             AlphaBlendMask(over, toOrig, color, maskThr, alpha);
 
                             byte thrByte = (byte)(maskThr * 255f + 0.5f);
-                            DrawMaskOutline(toOrig, g, color, 2, thrByte);
 
-                            if (drawBoxes)
+                            // 외곽선: 채움과 동일 기준으로, 정확히 맞추기
+                            if (overlaysOut != null)
                             {
-                                using (var pen = new Pen(color, 2))
-                                    g.DrawRectangle(pen, boxOrig);
+                                CollectMaskOutlineOverlaysExact(toOrig, thrByte, color, 2f, overlaysOut);
                             }
-                            if (drawScores)
+
+                            if (drawScores && overlaysOut != null)
                             {
-                                DrawLabel(g, boxOrig, $"[{d.ClassId}], Score{d.Score:0.00}", color);
+                                overlaysOut.Add(new SmartLabelingApp.ImageCanvas.OverlayItem
+                                {
+                                    Kind = SmartLabelingApp.ImageCanvas.OverlayKind.Badge,
+                                    Text = $"[{d.ClassId}]: {d.Score:0.00}",
+                                    BoxImg = boxOrig,
+                                    StrokeColor = color
+                                });
+                            }
+
+                            if (drawBoxes && overlaysOut != null)
+                            {
+                                overlaysOut.Add(new SmartLabelingApp.ImageCanvas.OverlayItem
+                                {
+                                    Kind = SmartLabelingApp.ImageCanvas.OverlayKind.Box,
+                                    BoxImg = boxOrig,
+                                    StrokeColor = color,
+                                    StrokeWidthPx = 3f
+                                });
                             }
                         }
                     }
@@ -368,31 +679,20 @@ namespace SmartLabelingApp
             return over;
         }
 
-
-        private static void DrawLabel(Graphics g, Rectangle anchor, string text, Color boxColor)
+        public struct OverlayResult
         {
-            using (var font = new Font("Segoe UI", 8, FontStyle.Regular))
-            {
-                var sizeF = g.MeasureString(text, font);
-                int pad = 4;
-                int w = (int)Math.Ceiling(sizeF.Width) + pad * 2;
-                int h = (int)Math.Ceiling(sizeF.Height) + pad * 2;
+            public Bitmap Image;
+            public List<SmartLabelingApp.ImageCanvas.OverlayItem> Overlays;
+        }
 
-                int x = anchor.Left;
-                int y = anchor.Top - h - 1;
-                if (y < 0) y = anchor.Top + 1;
+        public static OverlayResult Render(Bitmap orig, SegResult r,
+            float maskThr = 0.65f, float alpha = 0.45f,
+            bool drawBoxes = false, bool drawScores = true)
+        {
+            var list = new List<SmartLabelingApp.ImageCanvas.OverlayItem>();
+            var bmp = Overlay(orig, r, maskThr, alpha, drawBoxes, drawScores, overlaysOut: list);
 
-                var rect = new Rectangle(x, y, w, h);
-
-                using (var bg = new SolidBrush(Color.FromArgb(170, 0, 0, 0)))
-                using (var pen = new Pen(boxColor, 2))
-                using (var txt = new SolidBrush(Color.White))
-                {
-                    g.FillRectangle(bg, rect);
-                    g.DrawRectangle(pen, rect);
-                    g.DrawString(text, font, txt, rect.Left + pad, rect.Top + pad);
-                }
-            }
+            return new OverlayResult { Image = bmp, Overlays = list };
         }
 
         // 진행률 헬퍼: 퍼센트 상승만 허용
@@ -465,62 +765,203 @@ namespace SmartLabelingApp
             return session;
         }
 
+        private static bool TryAppendCudaWithOptions(SessionOptions so)
+        {
+            try
+            {
+                // 케이스 A: 신형 API 타입이 존재하는 경우
+                var optType = Type.GetType(
+                    "Microsoft.ML.OnnxRuntime.Provider.OrtCUDAProviderOptions, Microsoft.ML.OnnxRuntime")
+                    ?? Type.GetType("Microsoft.ML.OnnxRuntime.Providers.OrtCUDAProviderOptions, Microsoft.ML.OnnxRuntime");
+                if (optType != null)
+                {
+                    var cuda = Activator.CreateInstance(optType);
+
+                    // 속성들은 있는 경우에만 세팅
+                    SetIfExists(optType, cuda, "DeviceId", 0);
+                    var enumType = optType.Assembly.GetType(
+                        "Microsoft.ML.OnnxRuntime.Provider.OrtCudnnConvAlgoSearch")
+                        ?? optType.Assembly.GetType("Microsoft.ML.OnnxRuntime.Providers.OrtCudnnConvAlgoSearch");
+                    if (enumType != null)
+                    {
+                        var heuristic = Enum.Parse(enumType, "HEURISTIC", ignoreCase: true);
+                        SetIfExists(optType, cuda, "CudnnConvAlgoSearch", heuristic);
+                    }
+                    SetIfExists(optType, cuda, "EnableCudaGraph", 1);
+                    SetIfExists(optType, cuda, "DoCopyInDefaultStream", 1);
+                    SetIfExists(optType, cuda, "TunableOpEnable", 1);
+                    SetIfExists(optType, cuda, "TunableOpTuningEnable", 1);
+                    SetIfExists(optType, cuda, "TunableOpMaxTuningDurationMs", 500);
+
+                    var mi = typeof(SessionOptions).GetMethod("AppendExecutionProvider_CUDA", new[] { optType });
+                    if (mi != null) { mi.Invoke(so, new object[] { cuda }); return true; }
+                }
+
+                // 케이스 B: 문자열 딕셔너리 방식(중간 버전)
+                var mi2 = typeof(SessionOptions).GetMethod(
+                    "AppendExecutionProvider", new[] { typeof(string), typeof(IDictionary<string, string>) });
+                if (mi2 != null)
+                {
+                    var opts = new Dictionary<string, string>
+                    {
+                        ["device_id"] = "0",
+                        ["cudnn_conv_algo_search"] = "HEURISTIC",
+                        ["enable_cuda_graph"] = "1",
+                        ["do_copy_in_default_stream"] = "1",
+                        ["tunable_op_enable"] = "1",
+                        ["tunable_op_tuning_enable"] = "1",
+                        ["tunable_op_max_tuning_duration_ms"] = "500"
+                    };
+                    mi2.Invoke(so, new object[] { "CUDAExecutionProvider", opts });
+                    return true;
+                }
+            }
+            catch { /* 옵션 부착 실패 → 아래에서 기본 CUDA로 폴백 */ }
+            return false;
+        }
+
+        private static void SetIfExists(Type t, object obj, string prop, object value)
+        {
+            var p = t.GetProperty(prop, BindingFlags.Public | BindingFlags.Instance);
+            if (p != null && p.CanWrite) p.SetValue(obj, value, null);
+        }
+
+        private static void TryWarmup(InferenceSession s, int netSize)
+        {
+            try
+            {
+                var inputName = s.InputMetadata.Keys.FirstOrDefault();
+                if (string.IsNullOrEmpty(inputName)) return;
+
+                var dummy = new DenseTensor<float>(new[] { 1, 3, netSize, netSize }); // 0으로 충분
+
+                // 입력 한 개만 using 으로 Dispose
+                var input = NamedOnnxValue.CreateFromTensor(inputName, dummy);
+                // 결과 컬렉션도 IDisposable이므로 using 으로 바로 버림
+                using (var _ = s.Run(new[] { input }))
+                {
+                    // do nothing (warm-up)
+                }
+            }
+            catch
+            {
+                // warm-up 실패해도 무시(환경 차이)
+            }
+        }
+
+        static bool TryAppendTensorRT(SessionOptions so)
+        {
+            try
+            {
+                // 1) 전용 API가 있는 버전
+                so.AppendExecutionProvider_Tensorrt(0); // 있으면 이 한 줄로 끝
+                                                        // 옵션을 넣고 싶다면 별도 ProviderOptions 객체/사전이 필요
+                return true;
+            }
+            catch
+            {
+                try
+                {
+                    // 2) 범용 AppendExecutionProvider(이름, 옵션 사전) 방식
+                    var cacheDir = Path.Combine(AppContext.BaseDirectory, "trt_cache");
+                    Directory.CreateDirectory(cacheDir);
+
+                    var trtOpts = new Dictionary<string, string>
+            {
+                { "device_id", "0" },
+                { "trt_fp16_enable", "1" },
+                // { "trt_int8_enable", "1" }, // 교정 세트 있을 때만
+                { "trt_engine_cache_enable", "1" },
+                { "trt_engine_cache_path", cacheDir },
+                { "trt_timing_cache_enable", "1" }
+            };
+
+                    so.AppendExecutionProvider("Tensorrt", trtOpts);
+                    return true;
+                }
+                catch { return false; }
+            }
+        }
+
+
 
         private static InferenceSession CreateSessionWithFallback(string modelPath)
         {
-            // 항상 x64 빌드 전제
             SessionOptions so = null;
 
-            // 1) CUDA EP
+            //// 1) TensorRT EP
+            //try
+            //{
+            //    so = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL };
+            //    Log("Trying TensorRT EP...");
+
+            //    if (!TryAppendTensorRT(so))
+            //        throw new NotSupportedException("TensorRT EP not available in this build.");
+
+            //    var sess = new InferenceSession(modelPath, so);
+            //    Log("Session created with TensorRT EP.");
+            //    EnsureInputBuffers(sess, 640);
+            //    TryWarmup(sess, 640);
+            //    return sess;
+            //}
+            //catch (Exception ex)
+            //{
+            //    Log("TensorRT EP failed / unavailable, falling back to CUDA.");
+            //    Log(ex.Message);
+            //    try { so?.Dispose(); } catch { }
+            //}
+
+            // 2) CUDA EP
             try
             {
-                so = new SessionOptions
-                {
-                    GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
-                };
+                so = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL };
                 Log("Trying CUDA EP...");
-                so.AppendExecutionProvider_CUDA(deviceId: 0); // requires OnnxRuntime.Gpu
-                var s = new InferenceSession(modelPath, so);
+
+                if (!TryAppendCudaWithOptions(so))      // 옵션 방식 시도
+                    so.AppendExecutionProvider_CUDA(0); // 기본 방식
+
+                var sess = new InferenceSession(modelPath, so);
                 Log("Session created with CUDA EP.");
-                return s;
+                EnsureInputBuffers(sess, 640);
+                TryWarmup(sess, 640);
+                return sess;
             }
-            catch (Exception e)
+            catch (Exception ex)
             {
                 Log("CUDA EP failed, will try DML EP.");
-                Log(e.ToString());
+                Log(ex.ToString());
                 try { so?.Dispose(); } catch { }
             }
 
-            // 2) DirectML EP
+            // 3) DML EP
             try
             {
-                so = new SessionOptions
-                {
-                    GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
-                };
+                so = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL };
                 Log("Trying DML EP...");
-                so.AppendExecutionProvider_DML(); // Windows GPU 드라이버만 있으면 동작
-                var s = new InferenceSession(modelPath, so);
+                so.AppendExecutionProvider_DML(); // 또는 (0)
+                var sess = new InferenceSession(modelPath, so);
                 Log("Session created with DML EP.");
-                return s;
+                EnsureInputBuffers(sess, 640);
+                TryWarmup(sess, 640);
+                return sess;
             }
-            catch (Exception e)
+            catch (Exception ex)
             {
-                Log("DML EP failed, will fall back to CPU.");
-                Log(e.ToString());
+                Log("DML EP failed, falling back to CPU.");
+                Log(ex.ToString());
                 try { so?.Dispose(); } catch { }
             }
 
-            // 3) CPU
-            var soCpu = new SessionOptions
-            {
-                GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
-            };
+            // 4) CPU
+            var soCpu = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL };
             Log("Creating CPU session...");
-            var sCpu = new InferenceSession(modelPath, soCpu);
+            var cpu = new InferenceSession(modelPath, soCpu);
             Log("CPU session created.");
-            return sCpu;
+            EnsureInputBuffers(cpu, 640);
+            // (CPU에선 Warmup 별 의미 없음) 
+            return cpu;
         }
+
 
 
         // ===== Utils =====

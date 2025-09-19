@@ -52,6 +52,49 @@ namespace SmartLabelingApp
         public Color ActiveFillColor => _activeFill;
         public string ActiveLabelName => _activeLabel;
 
+
+        public enum OverlayKind
+        {
+            Badge,      // 텍스트 배지
+            Box,        // 사각 박스
+            Polyline,   // 열린 선
+            Polygon     // 닫힌 폴리곤(채우지는 않음)
+        }
+
+        // 2) 통합 아이템
+        public struct OverlayItem
+        {
+            public OverlayKind Kind;
+
+            // 공통 스타일
+            public Color StrokeColor;     // 배지의 accent 또는 선 색
+            public float StrokeWidthPx;   // 선 두께(화면 px)
+            public DashStyle Dash;        // 점선 등(기본 Solid)
+
+            // Badge 전용
+            public string Text;           // 배지 텍스트
+            public RectangleF BoxImg;     // 배지 기준 박스(이미지 좌표)
+
+            // 선/폴리곤 전용
+            public PointF[] PointsImg;    // 이미지 좌표 점들
+            public bool Closed;           // Polyline에서 마지막-첫점 연결 여부
+        }
+
+        // 3) 통합 리스트 + API
+        private readonly List<OverlayItem> _inferenceOverlays = new List<OverlayItem>();
+
+        public void SetInferenceOverlays(IEnumerable<OverlayItem> items)
+        {
+            _inferenceOverlays.Clear();
+            if (items != null) _inferenceOverlays.AddRange(items);
+            Invalidate();
+        }
+        public void ClearInferenceOverlays()
+        {
+            _inferenceOverlays.Clear();
+            Invalidate();
+        }
+
         public void SetActiveLabel(string labelName, Color strokeColor, Color fillColor)
         {
             _activeLabel = labelName;
@@ -513,7 +556,6 @@ namespace SmartLabelingApp
                 }
             }
 
-            // 5) 라벨 배지(맨 마지막에 그려 가독성 확보)
             for (int i = 0; i < Shapes.Count; i++)
             {
                 var s = Shapes[i];
@@ -524,6 +566,82 @@ namespace SmartLabelingApp
                 if (TryGetShapeLabelAndStroke(s, out var lbl, out var stroke) && !string.IsNullOrWhiteSpace(lbl))
                     DrawLabelTag(g, bScr, lbl, stroke);
             }
+
+            if (_inferenceOverlays.Count > 0)
+            {
+                foreach (var it in _inferenceOverlays)
+                {
+                    switch (it.Kind)
+                    {
+                        case OverlayKind.Badge:
+                            {
+                                var rScr = Transform.ImageRectToScreen(it.BoxImg);
+                                DrawLabelTag(g, rScr, it.Text ?? "", it.StrokeColor);
+                                break;
+                            }
+
+                        case OverlayKind.Box:
+                            {
+                                var rScr = Transform.ImageRectToScreen(it.BoxImg); // RectangleF
+
+                                using (var pen = new Pen(it.StrokeColor, Math.Max(1f, it.StrokeWidthPx)))
+                                {
+                                    pen.DashStyle = it.Dash;
+
+                                    if (((int)Math.Round(pen.Width)) % 2 == 1)
+                                    {
+                                        rScr.X += 0.5f; rScr.Y += 0.5f; rScr.Width -= 1f; rScr.Height -= 1f;
+                                    }
+
+                                    g.DrawRectangle(pen, rScr.X, rScr.Y, rScr.Width, rScr.Height); // ← float 오버로드
+                                }
+                                break;
+                            }
+
+
+                        case OverlayKind.Polyline:
+                        case OverlayKind.Polygon:
+                            {
+                                if (it.PointsImg == null || it.PointsImg.Length < 2) break;
+
+                                // 이미지→화면 좌표 변환
+                                var ptsScr = new PointF[it.PointsImg.Length];
+                                for (int i = 0; i < ptsScr.Length; i++)
+                                    ptsScr[i] = ImgPointToScreen(it.PointsImg[i]);
+
+                                using (var pen = new Pen(it.StrokeColor, Math.Max(1f, it.StrokeWidthPx)))
+                                {
+                                    pen.DashStyle = it.Dash;
+                                    bool closed = it.Kind == OverlayKind.Polygon || it.Closed;
+                                    if (closed && ptsScr.Length >= 3) g.DrawPolygon(pen, ptsScr);
+                                    else g.DrawLines(pen, ptsScr);
+                                }
+                                break;
+                            }
+                    }
+                }
+            }
+        }
+
+        public void SetImageAndOverlays(Bitmap image, IEnumerable<OverlayItem> overlays)
+        {
+            // 기존 것 정리
+            ClearInferenceOverlays();
+
+            var old = this.Image;
+            this.Image = image;
+            old?.Dispose();
+
+            if (overlays != null)
+                SetInferenceOverlays(overlays);   // 내부에서 Invalidate() 호출함
+            else
+                Invalidate();
+        }
+
+        private PointF ImgPointToScreen(PointF pImg)
+        {
+            var r = Transform.ImageRectToScreen(new RectangleF(pImg.X, pImg.Y, 0, 0));
+            return new PointF(r.X, r.Y);
         }
 
         private void DrawLabelTag(Graphics g, RectangleF shapeBoundsScreen, string label, Color accentColor)
