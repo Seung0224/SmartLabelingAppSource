@@ -604,7 +604,21 @@ namespace SmartLabelingApp
             return over;
         }
 
+        public struct OverlayResult
+        {
+            public Bitmap Image;
+            public List<SmartLabelingApp.ImageCanvas.OverlayItem> Overlays;
+        }
 
+        public static OverlayResult Render(Bitmap orig, SegResult r,
+            float maskThr = 0.65f, float alpha = 0.45f,
+            bool drawBoxes = false, bool drawScores = true)
+        {
+            var list = new List<SmartLabelingApp.ImageCanvas.OverlayItem>();
+            var bmp = Overlay(orig, r, maskThr, alpha, drawBoxes, drawScores, overlaysOut: list);
+
+            return new OverlayResult { Image = bmp, Overlays = list };
+        }
 
         // 진행률 헬퍼: 퍼센트 상승만 허용
         private static void ReportStep(IProgress<(int percent, string status)> progress, ref int cur, int next, string msg)

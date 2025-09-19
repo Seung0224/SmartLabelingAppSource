@@ -622,6 +622,22 @@ namespace SmartLabelingApp
                 }
             }
         }
+
+        public void SetImageAndOverlays(Bitmap image, IEnumerable<OverlayItem> overlays)
+        {
+            // 기존 것 정리
+            ClearInferenceOverlays();
+
+            var old = this.Image;
+            this.Image = image;
+            old?.Dispose();
+
+            if (overlays != null)
+                SetInferenceOverlays(overlays);   // 내부에서 Invalidate() 호출함
+            else
+                Invalidate();
+        }
+
         private PointF ImgPointToScreen(PointF pImg)
         {
             var r = Transform.ImageRectToScreen(new RectangleF(pImg.X, pImg.Y, 0, 0));

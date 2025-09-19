@@ -3677,8 +3677,7 @@ namespace SmartLabelingApp
         // 공용: 원본(_sourceImage)로 추론 + 오버레이 생성 + 화면 적용까지 한 번에 수행
         private async Task<bool> RunInferenceAndApplyAsync(CancellationToken token = default)
         {
-            Bitmap overlayed = null;
-            List<CanvasOverlay> overlays = null;
+            YoloSegOnnx.OverlayResult result = default;
 
             using (var srcCopy = (Bitmap)_sourceImage.Clone())
             {
@@ -3688,10 +3687,8 @@ namespace SmartLabelingApp
 
                     var res = YoloSegOnnx.Infer(_onnxSession, srcCopy);
 
-                    overlays = new List<CanvasOverlay>();
-
                     var swOverlay = System.Diagnostics.Stopwatch.StartNew();
-                    overlayed = YoloSegOnnx.Overlay(srcCopy, res, overlaysOut: overlays);
+                    result = YoloSegOnnx.Render(srcCopy, res);
                     swOverlay.Stop();
 
                     AddLog($"Inference 완료: {res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms, overlay={swOverlay.Elapsed.TotalMilliseconds:F0}ms");
@@ -3699,20 +3696,16 @@ namespace SmartLabelingApp
                 }, token);
             }
 
-            if (token.IsCancellationRequested || overlayed == null)
+            if (token.IsCancellationRequested || result.Image == null)
                 return false;
 
-            _canvas.ClearInferenceOverlays();
-            var old = _canvas.Image;
-            _canvas.Image = overlayed;
-            old?.Dispose();
+            // 한 줄로 적용 ✨
+            _canvas.SetImageAndOverlays(result.Image, result.Overlays);
 
-            if (overlays.Count > 0)
-                _canvas.SetInferenceOverlays(overlays);
-
-            _canvas.Invalidate();
             return true;
         }
+
+
 
         private async void OnInferClick(object sender, EventArgs e)
         {
