@@ -52,6 +52,29 @@ namespace SmartLabelingApp
         public Color ActiveFillColor => _activeFill;
         public string ActiveLabelName => _activeLabel;
 
+
+        public struct InferenceBadge   // ← public, 그리고 ImageCanvas 내부
+        {
+            public RectangleF BoxImg;
+            public string Text;
+            public Color Accent;
+        }
+
+        private readonly List<InferenceBadge> _inferenceBadges = new List<InferenceBadge>();
+
+        public void SetInferenceBadges(IEnumerable<InferenceBadge> badges)
+        {
+            _inferenceBadges.Clear();
+            if (badges != null) _inferenceBadges.AddRange(badges);
+            Invalidate();
+        }
+
+        public void ClearInferenceBadges()
+        {
+            _inferenceBadges.Clear();
+            Invalidate();
+        }
+
         public void SetActiveLabel(string labelName, Color strokeColor, Color fillColor)
         {
             _activeLabel = labelName;
@@ -513,7 +536,6 @@ namespace SmartLabelingApp
                 }
             }
 
-            // 5) 라벨 배지(맨 마지막에 그려 가독성 확보)
             for (int i = 0; i < Shapes.Count; i++)
             {
                 var s = Shapes[i];
@@ -523,6 +545,15 @@ namespace SmartLabelingApp
                 var bScr = Transform.ImageRectToScreen(bImg);
                 if (TryGetShapeLabelAndStroke(s, out var lbl, out var stroke) && !string.IsNullOrWhiteSpace(lbl))
                     DrawLabelTag(g, bScr, lbl, stroke);
+            }
+
+            if (_inferenceBadges.Count > 0)
+            {
+                foreach (var b in _inferenceBadges)
+                {
+                    var bScr = Transform.ImageRectToScreen(b.BoxImg);
+                    DrawLabelTag(g, bScr, b.Text, b.Accent);
+                }
             }
         }
 

@@ -45,76 +45,6 @@ namespace SmartLabelingApp
         private static string _cachedModelPath = null;
         private static readonly object _sessionLock = new object();
 
-        private static void DrawLabelTagLikeCanvas(Graphics g, Rectangle boxImg, string label, Color accentColor, int imgW, int imgH)
-        {
-            if (string.IsNullOrWhiteSpace(label)) return;
-
-            using (var font = new Font("Segoe UI", 9f, FontStyle.Bold))
-            {
-                // ImageCanvas와 동일하게 TextRenderer 기반 측정
-                var textSz = TextRenderer.MeasureText(label, font, new Size(int.MaxValue, int.MaxValue),
-                                                      TextFormatFlags.NoPadding);
-
-                int innerW = textSz.Width + LABEL_BADGE_PADX * 2
-                           + (LABEL_BADGE_ACCENT_W > 0 ? (LABEL_BADGE_ACCENT_W + LABEL_BADGE_PADX) : 0);
-                int innerH = textSz.Height + LABEL_BADGE_PADY * 2;
-
-                // 박스 하단에 배지 배치 (화면 밖이면 위쪽으로 자동 보정)
-                var tagRect = new Rectangle(
-                    boxImg.Left,
-                    boxImg.Bottom + LABEL_BADGE_GAP_PX,
-                    innerW + LABEL_BADGE_BORDER_PX * 2,
-                    innerH + LABEL_BADGE_BORDER_PX * 2
-                );
-
-                // 오른쪽/아래쪽 경계 보정
-                if (tagRect.Right > imgW) tagRect.X = Math.Max(0, imgW - tagRect.Width - 1);
-                if (tagRect.Bottom > imgH)
-                {
-                    // 아래가 넘치면 박스 위로 올림
-                    tagRect.Y = Math.Max(0, boxImg.Top - LABEL_BADGE_GAP_PX - tagRect.Height);
-                }
-
-                // 배경 ‘닦기’(하얀 여유)
-                if (LABEL_BADGE_WIPE_PX > 0)
-                {
-                    var wipeRect = Rectangle.Inflate(tagRect, LABEL_BADGE_WIPE_PX, LABEL_BADGE_WIPE_PX);
-                    using (var wipe = new SolidBrush(Color.White)) g.FillRectangle(wipe, wipeRect);
-                }
-
-                // 배경
-                using (var bg = new SolidBrush(Color.White)) g.FillRectangle(bg, tagRect);
-
-                // 테두리 (홀수 두께 보정 포함)
-                if (LABEL_BADGE_BORDER_PX > 0)
-                {
-                    using (var pen = new Pen(Color.FromArgb(180, 200, 210), LABEL_BADGE_BORDER_PX))
-                    {
-                        var br = (RectangleF)tagRect;
-                        int bpx = LABEL_BADGE_BORDER_PX;
-                        if ((bpx & 1) == 1)
-                        { br.X += .5f; br.Y += .5f; br.Width -= 1f; br.Height -= 1f; }
-                        g.DrawRectangle(pen, br.X, br.Y, br.Width, br.Height);
-                    }
-                }
-
-                // 안쪽 영역
-                var innerRect = Rectangle.Inflate(tagRect, -LABEL_BADGE_BORDER_PX, -LABEL_BADGE_BORDER_PX);
-
-                // 왼쪽 강조 막대 + 텍스트 시작점
-                int textLeft = innerRect.Left + LABEL_BADGE_PADX;
-                if (LABEL_BADGE_ACCENT_W > 0)
-                {
-                    var accRect = new Rectangle(innerRect.Left, innerRect.Top, LABEL_BADGE_ACCENT_W, innerRect.Height);
-                    using (var acc = new SolidBrush(accentColor)) g.FillRectangle(acc, accRect);
-                    textLeft = accRect.Right + LABEL_BADGE_PADX;
-                }
-
-                var textPt = new Point(textLeft, innerRect.Top + LABEL_BADGE_PADY - 1);
-                TextRenderer.DrawText(g, label, font, textPt, Color.Black,
-                    TextFormatFlags.NoPadding | TextFormatFlags.NoClipping);
-            }
-        }
         private static InferenceSession GetOrCreateSession(string modelPath, out double initMs)
         {
             lock (_sessionLock)
@@ -370,7 +300,7 @@ namespace SmartLabelingApp
         }
 
         // === 완전 분리: 합성만 수행 (원본 + SegResult → 새 Bitmap 반환) ===
-        public static Bitmap Overlay(Bitmap orig, SegResult r, float maskThr = 0.65f, float alpha = 0.45f, bool drawBoxes = false, bool drawScores = true)
+        public static Bitmap Overlay(Bitmap orig, SegResult r, float maskThr = 0.65f, float alpha = 0.45f, bool drawBoxes = false, bool drawScores = true, List<ImageCanvas.InferenceBadge> badgesOut = null)
         {
             if (orig == null) throw new ArgumentNullException(nameof(orig));
             if (r == null) throw new ArgumentNullException(nameof(r));
@@ -383,16 +313,15 @@ namespace SmartLabelingApp
                 if (r.Dets == null || r.Dets.Count == 0)
                     return over;
 
-                // proto accessor
                 int segDim = r.SegDim;
                 int mh = r.MaskH, mw = r.MaskW;
-                var proto = r.ProtoFlat; // 길이 = segDim * mh * mw
+                var proto = r.ProtoFlat;
                 Func<int, int, int, float> ProtoAt = (k, y, x) => proto[(k * mh + y) * mw + x];
 
                 int di = 0;
                 foreach (var d in r.Dets)
                 {
-                    // 1) coeff ⋅ proto → mask(mh×mw), sigmoid
+                    // === (1) 마스크 처리 기존 그대로 ===
                     var mask = new float[mh * mw];
                     for (int yy = 0; yy < mh; yy++)
                     {
@@ -406,7 +335,6 @@ namespace SmartLabelingApp
                         }
                     }
 
-                    // 2) 네트 좌표 → 원본 좌표로 업샘플/크롭/리사이즈
                     using (var maskBmp = FloatMaskToBitmap(mask, mw, mh))
                     using (var up = ResizeBitmap(maskBmp, r.NetSize, r.NetSize))
                     {
@@ -433,44 +361,28 @@ namespace SmartLabelingApp
                                 using (var pen = new Pen(color, 2))
                                     g.DrawRectangle(pen, boxOrig);
                             }
-                            if (drawScores)
+
+                            // === (2) 점수/라벨은 "화면 렌더링" 단계로 넘긴다 ===
+                            if (drawScores && badgesOut != null)
                             {
-                                string labelText = $"[{d.ClassId}]  {d.Score:0.00}";  // 필요 시 클래스명으로 치환
-                                DrawLabelTagLikeCanvas(g, boxOrig, labelText, color, orig.Width, orig.Height);
+                                // 표기 문자열: 필요에 따라 클래스명/점수 포맷 변경
+                                string labelText = $"[{d.ClassId}], {d.Score:0.00}";
+                                // 이미지 좌표의 박스 그대로 넘김 (ImageCanvas에서 화면좌표로 변환해서 그림)
+                                badgesOut.Add(new ImageCanvas.InferenceBadge
+                                {
+                                    BoxImg = (RectangleF)boxOrig,
+                                    Text = labelText,
+                                    Accent = color
+                                });
                             }
+
+                            // ※ 더 이상 여기서 g.DrawString/DrawLabel 하지 않는다 (화질 저하 방지)
                         }
                     }
                     di++;
                 }
             }
             return over;
-        }
-
-
-        private static void DrawLabel(Graphics g, Rectangle anchor, string text, Color boxColor)
-        {
-            using (var font = new Font("Segoe UI", 8, FontStyle.Regular))
-            {
-                var sizeF = g.MeasureString(text, font);
-                int pad = 4;
-                int w = (int)Math.Ceiling(sizeF.Width) + pad * 2;
-                int h = (int)Math.Ceiling(sizeF.Height) + pad * 2;
-
-                int x = anchor.Left;
-                int y = anchor.Top - h - 1;
-                if (y < 0) y = anchor.Top + 1;
-
-                var rect = new Rectangle(x, y, w, h);
-
-                using (var bg = new SolidBrush(Color.FromArgb(170, 0, 0, 0)))
-                using (var pen = new Pen(boxColor, 2))
-                using (var txt = new SolidBrush(Color.White))
-                {
-                    g.FillRectangle(bg, rect);
-                    g.DrawRectangle(pen, rect);
-                    g.DrawString(text, font, txt, rect.Left + pad, rect.Top + pad);
-                }
-            }
         }
 
         // 진행률 헬퍼: 퍼센트 상승만 허용

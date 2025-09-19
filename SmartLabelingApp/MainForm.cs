@@ -15,7 +15,10 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Documents;
 using System.Windows.Forms;
+
+using CanvasBadge = SmartLabelingApp.ImageCanvas.InferenceBadge;
 
 namespace SmartLabelingApp
 {
@@ -1258,12 +1261,18 @@ namespace SmartLabelingApp
 
         private async void OnPrevClick(object sender, EventArgs e)
         {
+            _canvas.ClearInferenceBadges();
+            _canvas.Invalidate();
+            
             try { NavigateImage(-1); } catch { }
             await AutoInferIfEnabledAsync();
             _canvas?.Focus();
         }
         private async void OnNextClick(object sender, EventArgs e)
         {
+            _canvas.ClearInferenceBadges();
+            _canvas.Invalidate();
+
             try { NavigateImage(+1); } catch { }
             await AutoInferIfEnabledAsync();
             _canvas?.Focus();
@@ -3664,11 +3673,11 @@ namespace SmartLabelingApp
                 }.Show();
             }
         }
-
         // 공용: 원본(_sourceImage)로 추론 + 오버레이 생성 + 화면 적용까지 한 번에 수행
         private async Task<bool> RunInferenceAndApplyAsync(CancellationToken token = default)
         {
             Bitmap overlayed = null;
+            List<CanvasBadge> badges = null;
 
             using (var srcCopy = (Bitmap)_sourceImage.Clone())
             {
@@ -3677,10 +3686,18 @@ namespace SmartLabelingApp
                     if (token.IsCancellationRequested) return;
 
                     var res = YoloSegOnnx.Infer(_onnxSession, srcCopy);
+
+                    badges = new List<CanvasBadge>();
+
                     var swOverlay = System.Diagnostics.Stopwatch.StartNew();
-                    overlayed = YoloSegOnnx.Overlay(srcCopy, res);
+                    overlayed = YoloSegOnnx.Overlay(
+                        srcCopy, res,
+                        maskThr: 0.65f, alpha: 0.45f,
+                        drawBoxes: false, drawScores: true,
+                        badgesOut: badges
+                    );
                     swOverlay.Stop();
-                    
+
                     AddLog($"Inference 완료: {res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms, overlay={swOverlay.Elapsed.TotalMilliseconds:F0}ms");
                     AddLog($"총합 ≈ {(res.PreMs + res.InferMs + res.PostMs + swOverlay.Elapsed.TotalMilliseconds):F0}ms");
                 }, token);
@@ -3689,11 +3706,15 @@ namespace SmartLabelingApp
             if (token.IsCancellationRequested || overlayed == null)
                 return false;
 
+            _canvas.ClearInferenceBadges();
             var old = _canvas.Image;
             _canvas.Image = overlayed;
             old?.Dispose();
-            _canvas.Invalidate();
 
+            if (badges != null && badges.Count > 0)
+                _canvas.SetInferenceBadges(badges);
+
+            _canvas.Invalidate();
             return true;
         }
 
