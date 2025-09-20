@@ -638,6 +638,17 @@ namespace SmartLabelingApp
                 Invalidate();
         }
 
+        public void SetImage(Bitmap image)
+        {
+            // 기존 것 정리
+            ClearInferenceOverlays();
+
+            var old = this.Image;
+            this.Image = image;
+            old?.Dispose();
+            Invalidate();
+        }
+
         private PointF ImgPointToScreen(PointF pImg)
         {
             var r = Transform.ImageRectToScreen(new RectangleF(pImg.X, pImg.Y, 0, 0));
