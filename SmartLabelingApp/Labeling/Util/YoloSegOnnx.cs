@@ -12,6 +12,7 @@ using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
+using static OpenCvSharp.Stitcher;
 using static SmartLabelingApp.ImageCanvas;
 
 namespace SmartLabelingApp
@@ -33,6 +34,12 @@ namespace SmartLabelingApp
     public static class YoloSegOnnx
     {
         #region Fields
+  
+        public enum LabelName
+        {
+            Liquid = 0,
+            Default = 1
+        }
         // ----- 라벨/배지 그리기용 상수 (UI 장식) -----
         const int LABEL_BADGE_GAP_PX = 2;
         const int LABEL_BADGE_PADX = 4;
@@ -924,7 +931,7 @@ namespace SmartLabelingApp
                     if (overlaysOut != null)
                     {
                         if (drawScores)
-                            overlaysOut.Add(new SmartLabelingApp.ImageCanvas.OverlayItem { Kind = SmartLabelingApp.ImageCanvas.OverlayKind.Badge, Text = $"[{d.ClassId}]: {d.Score:0.00}", BoxImg = box, StrokeColor = color });
+                            overlaysOut.Add(new SmartLabelingApp.ImageCanvas.OverlayItem { Kind = SmartLabelingApp.ImageCanvas.OverlayKind.Badge, Text = $"[{GetModeName(d.ClassId)}]: {d.Score:0.00}", BoxImg = box, StrokeColor = color });
                         if (drawBoxes)
                             overlaysOut.Add(new SmartLabelingApp.ImageCanvas.OverlayItem { Kind = SmartLabelingApp.ImageCanvas.OverlayKind.Box, BoxImg = box, StrokeColor = color, StrokeWidthPx = 3f });
                     }
@@ -991,6 +998,13 @@ namespace SmartLabelingApp
         #endregion
 
         #region Utils
+        public static string GetModeName(int value)
+        {
+            return Enum.IsDefined(typeof(LabelName), value)
+                ? ((LabelName)value).ToString()
+                : $"Unknown({value})";
+        }
+
         // 네트 좌표 박스를 원본 좌표 박스로 변환(레터박스 역변환)
         private static Rectangle NetBoxToOriginal(RectangleF boxNet, float scale, int padX, int padY, Size resized, Size orig)
         {

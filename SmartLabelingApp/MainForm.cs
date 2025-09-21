@@ -3744,16 +3744,16 @@ namespace SmartLabelingApp
                 {
                     if (token.IsCancellationRequested) return;
 
-                    //var res = YoloSegOnnx.Infer(_onnxSession, srcCopy);
+                    var res = YoloSegOnnx.Infer(_onnxSession, srcCopy);
 
-                    //var swOverlay = System.Diagnostics.Stopwatch.StartNew();
-                    //result = YoloSegOnnx.Render(srcCopy, res);
-                    //swOverlay.Stop();
+                    var swOverlay = System.Diagnostics.Stopwatch.StartNew();
+                    result = YoloSegOnnx.Render(srcCopy, res);
+                    swOverlay.Stop();
 
-                    //AddLog($"Inference 완료: {res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms, overlay={swOverlay.Elapsed.TotalMilliseconds:F0}ms");
-                    //AddLog($"총합 ≈ {(res.PreMs + res.InferMs + res.PostMs + swOverlay.Elapsed.TotalMilliseconds):F0}ms");
+                    AddLog($"Inference 완료: {res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms, overlay={swOverlay.Elapsed.TotalMilliseconds:F0}ms");
+                    AddLog($"총합 ≈ {(res.PreMs + res.InferMs + res.PostMs + swOverlay.Elapsed.TotalMilliseconds):F0}ms");
 
-                    result = YoloSegOnnx.RenderInputPreview(srcCopy, _onnxSession /* or forceNet: 640 */);
+                    // result = YoloSegOnnx.RenderInputPreview(srcCopy, _onnxSession /* or forceNet: 640 */);
 
                 }, token);
             }
@@ -3761,9 +3761,9 @@ namespace SmartLabelingApp
             if (token.IsCancellationRequested || result.Image == null)
                 return false;
 
-            // _canvas.SetImageAndOverlays(result.Image, result.Overlays);
+            _canvas.SetImageAndOverlays(result.Image, result.Overlays);
             
-            _canvas.SetImage(result.Image);
+            // _canvas.SetImage(result.Image);
             return true;
         }
 
