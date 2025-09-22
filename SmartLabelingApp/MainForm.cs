@@ -1097,6 +1097,7 @@ namespace SmartLabelingApp
             {
                 _onnxSession = null;
                 SetModelHeader("UNKNOWN");
+                SetRuntypeHeader("CPU");
                 return;
             }
 
@@ -1117,12 +1118,14 @@ namespace SmartLabelingApp
 
 
                     SetModelHeader(System.IO.Path.GetFileName(path));
+                    SetRuntypeHeader(_currentRunTypeName);
                 }
             }
             catch
             {
                 _onnxSession = null;
                 SetModelHeader("UNKNOWN");
+                SetRuntypeHeader("CPU");
             }
         }
 
