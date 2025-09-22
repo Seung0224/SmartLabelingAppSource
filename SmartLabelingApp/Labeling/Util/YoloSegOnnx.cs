@@ -11,6 +11,7 @@ using System.Numerics;
 using System.Reflection;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using static OpenCvSharp.Stitcher;
 using static SmartLabelingApp.ImageCanvas;
@@ -679,6 +680,289 @@ namespace SmartLabelingApp
             finally { dstRGBA.UnlockBits(d); }
         }
 
+
+        // 필요한 using: using System.Threading.Tasks; using System.Drawing.Imaging; (이미 있을 가능성 큼)
+        private static void BlendMaskIntoOrigROI2(
+            Bitmap dstRGBA, Rectangle boxOrig, float[] mask, int mw, int mh, int netSize,
+            float scale, int padX, int padY, float thr, float alpha, Color color)
+        {
+            // ===== 기존과 동일한 파라미터 처리 =====
+            float sx = (float)mw / netSize;
+            float sy = (float)mh / netSize;
+            byte rr = color.R, gg = color.G, bb = color.B;
+            byte thresh = (byte)Math.Max(0, Math.Min(255, (int)(thr * 255f + 0.5f))); // 스레시홀드
+            float a = Math.Max(0f, Math.Min(1f, alpha));
+
+            // ROI 클램프 (기존과 동일)
+            int x0 = Math.Max(0, boxOrig.Left);
+            int y0 = Math.Max(0, boxOrig.Top);
+            int x1 = Math.Min(dstRGBA.Width, boxOrig.Right);
+            int y1 = Math.Min(dstRGBA.Height, boxOrig.Bottom);
+            if (x0 >= x1 || y0 >= y1) return;
+
+            // ===== 좌표 사전 계산 (한 번만) =====
+            // u = (x*scale + padX) * sx  →  x만의 함수
+            // v = (y*scale + padY) * sy  →  y만의 함수
+            int roiW = x1 - x0;
+            int roiH = y1 - y0;
+
+            var u0_arr = new int[roiW];
+            var fu_arr = new float[roiW];
+            for (int i = 0; i < roiW; i++)
+            {
+                float u = (((x0 + i) * scale) + padX) * sx;
+                int u0 = (int)Math.Floor(u);
+                u0_arr[i] = u0;
+                fu_arr[i] = u - u0;
+            }
+
+            var v0_arr = new int[roiH];
+            var fv_arr = new float[roiH];
+            for (int j = 0; j < roiH; j++)
+            {
+                float v = (((y0 + j) * scale) + padY) * sy;
+                int v0 = (int)Math.Floor(v);
+                v0_arr[j] = v0;
+                fv_arr[j] = v - v0;
+            }
+
+            // ===== 비트맵 잠금 (기존과 동일: 32bppArgb, 알파는 최종 255로 유지) =====
+            var rect = new Rectangle(0, 0, dstRGBA.Width, dstRGBA.Height);
+            var d = dstRGBA.LockBits(rect, ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
+
+            try
+            {
+                unsafe
+                {
+                    byte* basePtr = (byte*)d.Scan0;
+                    int stride = d.Stride;
+
+                    // ===== 병렬 행 처리 =====
+                    Parallel.For(0, roiH, j =>
+                    {
+                        int y = y0 + j;
+                        int v0 = v0_arr[j];
+                        float fv = fv_arr[j];
+
+                        // 유효한 v 범위를 벗어나면 전체 행 스킵 (원 코드의 continue 분기와 동치)
+                        if (v0 < 0 || v0 + 1 >= mh) return;
+
+                        byte* row = basePtr + y * stride;
+
+                        // (1 - fv), (fv) 사전계산
+                        float fv0 = 1f - fv;
+                        float fv1 = fv;
+
+                        for (int i = 0; i < roiW; i++)
+                        {
+                            int x = x0 + i;
+                            int u0 = u0_arr[i];
+                            float fu = fu_arr[i];
+
+                            if (u0 < 0 || u0 + 1 >= mw) continue;
+
+                            // ===== bilinear 보간 (원식 그대로) =====
+                            int idx00 = v0 * mw + u0;
+                            int idx10 = idx00 + 1;
+                            int idx01 = idx00 + mw;
+                            int idx11 = idx01 + 1;
+
+                            float fu0 = 1f - fu;
+                            float fu1 = fu;
+
+                            float m =
+                                mask[idx00] * fu0 * fv0 +
+                                mask[idx10] * fu1 * fv0 +
+                                mask[idx01] * fu0 * fv1 +
+                                mask[idx11] * fu1 * fv1;
+
+                            // 스레시홀드 체크 (원식 동일)
+                            byte mByte = (byte)(m * 255f + 0.5f);
+                            if (mByte < thresh) continue;
+
+                            // ===== 단순 알파 블렌딩 (원식 그대로, float → byte 캐스트) =====
+                            int di = x * 4;
+                            float db = row[di + 0];
+                            float dg = row[di + 1];
+                            float dr = row[di + 2];
+
+                            row[di + 0] = (byte)(db * (1f - a) + bb * a);
+                            row[di + 1] = (byte)(dg * (1f - a) + gg * a);
+                            row[di + 2] = (byte)(dr * (1f - a) + rr * a);
+                            row[di + 3] = 255; // 기존과 동일
+                        }
+                    });
+                }
+            }
+            finally
+            {
+                dstRGBA.UnlockBits(d);
+            }
+        }
+
+        // 필요한 using:
+        // using System.Drawing.Imaging;
+        // using System.Threading.Tasks;
+
+        private static void BlendMaskIntoOrigROI3(
+            Bitmap dstRGBA, Rectangle boxOrig, float[] mask, int mw, int mh, int netSize,
+            float scale, int padX, int padY, float thr, float alpha, Color color)
+        {
+            // ----- 기존과 동일한 파라미터 처리 -----
+            float sx = (float)mw / netSize;
+            float sy = (float)mh / netSize;
+
+            // ROI 클램프
+            int x0 = Math.Max(0, boxOrig.Left);
+            int y0 = Math.Max(0, boxOrig.Top);
+            int x1 = Math.Min(dstRGBA.Width, boxOrig.Right);
+            int y1 = Math.Min(dstRGBA.Height, boxOrig.Bottom);
+            if (x0 >= x1 || y0 >= y1) return;
+
+            int roiW = x1 - x0;
+            int roiH = y1 - y0;
+
+            // 색/알파 (고정)
+            byte rr = color.R, gg = color.G, bb = color.B;
+            float a = Math.Max(0f, Math.Min(1f, alpha));
+            float ia = 1f - a;
+
+            // 임계값: float로 바로 비교 (시각 동일)
+            float thrF = Math.Max(0f, Math.Min(1f, thr));
+
+            // ----- 좌표/가중치 사전 계산 -----
+            // u = ((x*scale)+padX)*sx, v = ((y*scale)+padY)*sy
+            var u0_arr = new int[roiW];
+            var fu0_arr = new float[roiW];
+            var fu1_arr = new float[roiW];
+
+            for (int i = 0; i < roiW; i++)
+            {
+                float u = (((x0 + i) * scale) + padX) * sx;
+                int u0 = (int)Math.Floor(u);
+                float fu = u - u0;
+                u0_arr[i] = u0;
+                fu0_arr[i] = 1f - fu;
+                fu1_arr[i] = fu;
+            }
+
+            var v0_arr = new int[roiH];
+            var fv0_arr = new float[roiH];
+            var fv1_arr = new float[roiH];
+
+            for (int j = 0; j < roiH; j++)
+            {
+                float v = (((y0 + j) * scale) + padY) * sy;
+                int v0 = (int)Math.Floor(v);
+                float fv = v - v0;
+                v0_arr[j] = v0;
+                fv0_arr[j] = 1f - fv;
+                fv1_arr[j] = fv;
+            }
+
+            // ----- 비트맵 Lock -----
+            var rect = new Rectangle(0, 0, dstRGBA.Width, dstRGBA.Height);
+            var data = dstRGBA.LockBits(rect, ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
+
+            try
+            {
+                unsafe
+                {
+                    byte* basePtr = (byte*)data.Scan0;
+                    int stride = data.Stride;
+
+                    // 1) fixed에서 실제 주소를 IntPtr로 빼둠 (람다에서는 IntPtr만 캡처)
+                    IntPtr baseAddr = (IntPtr)basePtr;
+                    IntPtr maskAddr, u0Addr, fu0Addr, fu1Addr, v0Addr, fv0Addr, fv1Addr;
+
+                    fixed (float* pmask = mask)
+                    fixed (int* pu0 = u0_arr)
+                    fixed (float* pfu0 = fu0_arr, pfu1 = fu1_arr)
+                    fixed (int* pv0 = v0_arr)
+                    fixed (float* pfv0 = fv0_arr, pfv1 = fv1_arr)
+                    {
+                        maskAddr = (IntPtr)pmask;
+                        u0Addr = (IntPtr)pu0;
+                        fu0Addr = (IntPtr)pfu0;
+                        fu1Addr = (IntPtr)pfu1;
+                        v0Addr = (IntPtr)pv0;
+                        fv0Addr = (IntPtr)pfv0;
+                        fv1Addr = (IntPtr)pfv1;
+                    }
+
+                    int proc = Environment.ProcessorCount;
+
+                    Parallel.For(0, roiH, new ParallelOptions { MaxDegreeOfParallelism = proc }, j =>
+                    {
+                        // 2) 람다 내부에서 IntPtr → 포인터 캐스팅 (unsafe 블록)
+                        unsafe
+                        {
+                            byte* baseP = (byte*)baseAddr;
+                            float* pmask = (float*)maskAddr;
+                            int* pu0 = (int*)u0Addr;
+                            float* pfu0 = (float*)fu0Addr;
+                            float* pfu1 = (float*)fu1Addr;
+                            int* pv0 = (int*)v0Addr;
+                            float* pfv0 = (float*)fv0Addr;
+                            float* pfv1 = (float*)fv1Addr;
+
+                            int y = y0 + j;
+                            int v0 = pv0[j];
+                            if ((uint)v0 >= (uint)mh - 1) return;
+
+                            float wv0 = pfv0[j];
+                            float wv1 = pfv1[j];
+
+                            byte* p = baseP + y * stride + (x0 * 4);
+
+                            int base00 = v0 * mw;
+                            int base01 = base00 + mw;
+
+                            for (int i = 0; i < roiW; i++)
+                            {
+                                int u0 = pu0[i];
+                                if ((uint)u0 >= (uint)mw - 1)
+                                {
+                                    p += 4;
+                                    continue;
+                                }
+
+                                float wu0 = pfu0[i];
+                                float wu1 = pfu1[i];
+
+                                float m00 = pmask[base00 + u0];
+                                float m10 = pmask[base00 + u0 + 1];
+                                float m01 = pmask[base01 + u0];
+                                float m11 = pmask[base01 + u0 + 1];
+
+                                float mx0 = m00 * wu0 + m10 * wu1;
+                                float mx1 = m01 * wu0 + m11 * wu1;
+                                float m = mx0 * wv0 + mx1 * wv1;
+
+                                if (m < thrF)
+                                {
+                                    p += 4;
+                                    continue;
+                                }
+
+                                // dst = dst*(1-a) + color*a
+                                p[0] = (byte)(p[0] * ia + bb * a);
+                                p[1] = (byte)(p[1] * ia + gg * a);
+                                p[2] = (byte)(p[2] * ia + rr * a);
+                                p[3] = 255;
+
+                                p += 4;
+                            }
+                        }
+                    });
+                }
+            }
+            finally
+            {
+                dstRGBA.UnlockBits(data);
+            }
+        }
+
         // 마스크를 원본 크기의 그레이스케일 이미지에 써서(샘플링 포함) 외곽선 추출에 사용
         private static void WriteMaskGrayToOrigWithinROI(Bitmap dstGray, Rectangle boxOrig, float[] mask, int mw, int mh, int netSize, float scale, int padX, int padY)
         {
@@ -831,7 +1115,7 @@ namespace SmartLabelingApp
         {
             if (orig == null) throw new ArgumentNullException(nameof(orig));
             if (r == null) throw new ArgumentNullException(nameof(r));
-            var over = new Bitmap(orig.Width, orig.Height, PixelFormat.Format32bppArgb);
+            var over = (Bitmap)orig.Clone();
             using (var g = Graphics.FromImage(over))
             {
                 g.DrawImage(orig, 0, 0, orig.Width, orig.Height);
@@ -891,11 +1175,13 @@ namespace SmartLabelingApp
         }
 
         // OverlayFast: ROI에서 바로 샘플링/블렌딩(더 빠름)
-        public static Bitmap OverlayFast(Bitmap orig, SegResult r, float maskThr = 0.65f, float alpha = 0.45f, bool drawBoxes = false, bool drawScores = true, List<SmartLabelingApp.ImageCanvas.OverlayItem> overlaysOut = null)
+        
+        
+        public static Bitmap OverlayFast(Bitmap orig, SegResult r, float maskThr = 0.65f, float alpha = 0.45f, bool drawBoxes = false, bool drawScores = true, bool fillMask = true, bool drawoutlines = false, List < SmartLabelingApp.ImageCanvas.OverlayItem> overlaysOut = null)
         {
             if (orig == null) throw new ArgumentNullException(nameof(orig));
             if (r == null) throw new ArgumentNullException(nameof(r));
-            var over = new Bitmap(orig.Width, orig.Height, PixelFormat.Format32bppArgb);
+            var over = (Bitmap)orig.Clone();
             using (var g = Graphics.FromImage(over))
             {
                 g.DrawImage(orig, 0, 0, orig.Width, orig.Height);
@@ -915,17 +1201,21 @@ namespace SmartLabelingApp
                     var box = (Rectangle)boxOrig;
                     var color = ClassColor(d.ClassId);
 
-                    // 3) ROI 내부에 바로 블렌딩
-                    BlendMaskIntoOrigROI(over, box, mask, mw, mh, r.NetSize, r.Scale, r.PadX, r.PadY, maskThr, alpha, color);
-
-                    // 4) (옵션) 외곽선, 배지, 박스
-                    if (overlaysOut != null)
+                    if (fillMask)
                     {
-                        using (var toOrig = new Bitmap(orig.Width, orig.Height, PixelFormat.Format32bppArgb))
+                        // 3) ROI 내부에 바로 블렌딩
+                        BlendMaskIntoOrigROI3(over, box, mask, mw, mh, r.NetSize, r.Scale, r.PadX, r.PadY, maskThr, alpha, color);
+                    }
+                    if (drawoutlines)
+                    {
+                        if (overlaysOut != null)
                         {
-                            WriteMaskGrayToOrigWithinROI(toOrig, box, mask, mw, mh, r.NetSize, r.Scale, r.PadX, r.PadY);
-                            byte thrByte = (byte)(maskThr * 255f + 0.5f);
-                            CollectMaskOutlineOverlaysExact(toOrig, thrByte, color, 2f, overlaysOut);
+                            using (var toOrig = new Bitmap(orig.Width, orig.Height, PixelFormat.Format32bppArgb))
+                            {
+                                WriteMaskGrayToOrigWithinROI(toOrig, box, mask, mw, mh, r.NetSize, r.Scale, r.PadX, r.PadY);
+                                byte thrByte = (byte)(maskThr * 255f + 0.5f);
+                                CollectMaskOutlineOverlaysExact(toOrig, thrByte, color, 2f, overlaysOut);
+                            }
                         }
                     }
                     if (overlaysOut != null)
