@@ -34,8 +34,16 @@ namespace SmartLabelingApp
     // ------------------------------------------------------------------------------------
     public static class YoloSegOnnx
     {
+        static YoloSegOnnx()
+        {
+            try { ForceWarmupSimdKernels(); } catch { /* ignore */ }
+        }
+
+
         #region Fields
-  
+        
+        [ThreadStatic] private static float[] _maskBufTLS;
+
         public enum LabelName
         {
             Liquid = 0,
@@ -126,6 +134,32 @@ namespace SmartLabelingApp
         #endregion
 
         #region SessionManagement
+
+        private static void ForceWarmupSimdKernels()
+        {
+            // 1) SIMD 경로 강제 터치 (JIT + Vectors 로드)
+            int vc = Vector<float>.Count; // ex) 8 or 16
+
+            // 2) 더미 proto/coeff/mask 한 번 계산해 JIT 비용 선지불
+            int segDim = 32, mw = 160, mh = 160;        // 실제와 유사한 크기면 더 좋음
+            var proto = new float[segDim * mw * mh];
+            var coeff = new float[segDim];
+            for (int i = 0; i < coeff.Length; i++) coeff[i] = 0.01f * (i + 1);
+
+            // 할당 없는 버전으로 웜업 (패치 B에서 제공)
+            var maskBuf = new float[mw * mh];
+            ComputeMaskSIMD_NoAlloc(coeff, proto, segDim, mw, mh, maskBuf);
+
+            // 3) 블렌딩도 한 번(아주 작은 ROI) — LockBits/JIT 따뜻하게
+            using (var bmp = new Bitmap(32, 32, PixelFormat.Format32bppArgb))
+            {
+                var box = new Rectangle(2, 2, 28, 28);
+                // 이하 숫자는 의미 없는 더미 값 (실행만 함)
+                BlendMaskIntoOrigROI3(bmp, box, maskBuf, mw, mh, netSize: 640,
+                    scale: 1f, padX: 0, padY: 0, thr: 0.5f, alpha: 0.1f, color: Color.Red);
+            }
+        }
+
         // 세션 캐시를 활용해 InferenceSession을 가져오거나 생성합니다.
         private static InferenceSession GetOrCreateSession(string modelPath, out double initMs)
         {
@@ -181,6 +215,38 @@ namespace SmartLabelingApp
             ReportStep(progress, ref p, 92, "리소스 초기화");
             ReportStep(progress, ref p, 100, "완료");
             return session;
+        }
+
+        private static void ComputeMaskSIMD_NoAlloc(float[] coeff, float[] protoFlat, int segDim, int mw, int mh, float[] maskOut)
+        {
+            int vec = Vector<float>.Count;
+            System.Threading.Tasks.Parallel.For(0, mh, y =>
+            {
+                int rowOff = y * mw;
+                int x = 0;
+                for (; x <= mw - vec; x += vec)
+                {
+                    var sumV = new Vector<float>(0f);
+                    for (int k = 0; k < segDim; k++)
+                    {
+                        int off = ((k * mh + y) * mw) + x;
+                        var pV = new Vector<float>(protoFlat, off);
+                        var cV = new Vector<float>(coeff[k]);
+                        sumV += pV * cV;
+                    }
+                    for (int t = 0; t < vec; t++)
+                    {
+                        float s = sumV[t];
+                        maskOut[rowOff + x + t] = 1f / (1f + (float)Math.Exp(-s));
+                    }
+                }
+                for (; x < mw; x++)
+                {
+                    float sum = 0f;
+                    for (int k = 0; k < segDim; k++) sum += coeff[k] * protoFlat[(k * mh + y) * mw + x];
+                    maskOut[rowOff + x] = 1f / (1f + (float)Math.Exp(-sum));
+                }
+            });
         }
 
         // CUDA EP 옵션(있으면 사용) 추가 시도. 실패 시 일반 Append로 시도.
@@ -1132,9 +1198,9 @@ namespace SmartLabelingApp
         }
 
         // OverlayFast: ROI에서 바로 샘플링/블렌딩(더 빠름)
-        
-        
-        public static Bitmap OverlayFast(Bitmap orig, SegResult r, float maskThr = 0.65f, float alpha = 0.45f, bool drawBoxes = false, bool drawScores = true, bool fillMask = true, bool drawoutlines = false, List < SmartLabelingApp.ImageCanvas.OverlayItem> overlaysOut = null)
+
+
+        public static Bitmap OverlayFast(Bitmap orig, SegResult r, float maskThr = 0.65f, float alpha = 0.45f, bool drawBoxes = false, bool drawScores = true, bool fillMask = true, bool drawoutlines = true, List < SmartLabelingApp.ImageCanvas.OverlayItem> overlaysOut = null)
         {
             if (orig == null) throw new ArgumentNullException(nameof(orig));
             if (r == null) throw new ArgumentNullException(nameof(r));
@@ -1147,11 +1213,14 @@ namespace SmartLabelingApp
                 int segDim = r.SegDim;
                 int mh = r.MaskH, mw = r.MaskW;
                 var proto = r.ProtoFlat;
+                int maskLen = mw * mh;
+                if (_maskBufTLS == null || _maskBufTLS.Length < maskLen) _maskBufTLS = new float[maskLen];
 
                 foreach (var d in r.Dets)
                 {
                     // 1) SIMD로 마스크 생성
-                    var mask = ComputeMaskSIMD(d.Coeff, proto, segDim, mw, mh);
+                    var mask = _maskBufTLS;               // 재사용 버퍼
+                    ComputeMaskSIMD_NoAlloc(d.Coeff, proto, segDim, mw, mh, mask);
 
                     // 2) 박스 원본 좌표로 변환
                     var boxOrig = typeof(YoloSegOnnx).GetMethod("NetBoxToOriginal", BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, new object[] { d.Box, r.Scale, r.PadX, r.PadY, r.Resized, r.OrigSize });
