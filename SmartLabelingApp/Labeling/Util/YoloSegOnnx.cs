@@ -1197,9 +1197,101 @@ namespace SmartLabelingApp
             return over;
         }
 
+        public static Bitmap OverlaySuperFast(
+    Bitmap orig, SegResult r,
+    float maskThr = 0.65f, float alpha = 0.45f,
+    bool drawBoxes = false, bool drawScores = true,
+    bool fillMask = true, bool drawoutlines = true,
+    List<SmartLabelingApp.ImageCanvas.OverlayItem> overlaysOut = null)
+        {
+            if (orig == null) throw new ArgumentNullException(nameof(orig));
+            if (r == null) throw new ArgumentNullException(nameof(r));
+
+            // 원본 복제
+            var over = (Bitmap)orig.Clone();
+            using (var g = Graphics.FromImage(over))
+            {
+                g.DrawImage(orig, 0, 0, orig.Width, orig.Height);
+                if (r.Dets == null || r.Dets.Count == 0) return over;
+            }
+
+            int segDim = r.SegDim;
+            int mh = r.MaskH, mw = r.MaskW;
+            var proto = r.ProtoFlat;
+
+            // 프레임당 1회 LockBits
+            var rectAll = new Rectangle(0, 0, over.Width, over.Height);
+            var data = over.LockBits(rectAll, ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
+            try
+            {
+                // 각 detection 배치 처리
+                foreach (var d in r.Dets)
+                {
+                    // 마스크 버퍼 재사용 (패치 B)
+                    int maskLen = mw * mh;
+                    if (_maskBufTLS == null || _maskBufTLS.Length < maskLen)
+                        _maskBufTLS = new float[maskLen];
+
+                    // 할당 없는 마스크 계산(패치 B에서 추가한 NoAlloc 함수 사용)
+                    ComputeMaskSIMD_NoAlloc(d.Coeff, proto, segDim, mw, mh, _maskBufTLS);
+
+                    // 박스 원본 좌표 변환
+                    var box = NetBoxToOriginal(d.Box, r.Scale, r.PadX, r.PadY, r.Resized, r.OrigSize);
+                    var color = ClassColor(d.ClassId);
+
+                    // 내부 채움 요청 시: BitmapData에 직접 블렌딩 (여기서 LockBits 추가 호출 없음)
+                    if (fillMask)
+                    {
+                        BlendMaskIntoOrigROI_Batched(
+                            data, over.Width, over.Height,
+                            box, _maskBufTLS, mw, mh,
+                            r.NetSize, r.Scale, r.PadX, r.PadY,
+                            maskThr, alpha, color);
+                    }
+
+                    // 외곽선 옵션은 기존대로 (별도 비트맵에 작성 후 오버레이 생성)
+                    if (drawoutlines && overlaysOut != null)
+                    {
+                        using (var toOrig = new Bitmap(orig.Width, orig.Height, PixelFormat.Format32bppArgb))
+                        {
+                            WriteMaskGrayToOrigWithinROI(toOrig, box, _maskBufTLS, mw, mh, r.NetSize, r.Scale, r.PadX, r.PadY);
+                            byte thrByte = (byte)(maskThr * 255f + 0.5f);
+                            CollectMaskOutlineOverlaysExact(toOrig, thrByte, color, 2f, overlaysOut);
+                        }
+                    }
+
+                    // 배지/박스
+                    if (overlaysOut != null)
+                    {
+                        if (drawScores)
+                            overlaysOut.Add(new SmartLabelingApp.ImageCanvas.OverlayItem
+                            {
+                                Kind = SmartLabelingApp.ImageCanvas.OverlayKind.Badge,
+                                Text = $"[{GetModeName(d.ClassId)}]: {d.Score:0.00}",
+                                BoxImg = box,
+                                StrokeColor = color
+                            });
+                        if (drawBoxes)
+                            overlaysOut.Add(new SmartLabelingApp.ImageCanvas.OverlayItem
+                            {
+                                Kind = SmartLabelingApp.ImageCanvas.OverlayKind.Box,
+                                BoxImg = box,
+                                StrokeColor = color,
+                                StrokeWidthPx = 3f
+                            });
+                    }
+                }
+            }
+            finally
+            {
+                over.UnlockBits(data); // 프레임 끝에서 한 번만
+            }
+
+            return over;
+        }
+
+
         // OverlayFast: ROI에서 바로 샘플링/블렌딩(더 빠름)
-
-
         public static Bitmap OverlayFast(Bitmap orig, SegResult r, float maskThr = 0.65f, float alpha = 0.45f, bool drawBoxes = false, bool drawScores = true, bool fillMask = true, bool drawoutlines = true, List < SmartLabelingApp.ImageCanvas.OverlayItem> overlaysOut = null)
         {
             if (orig == null) throw new ArgumentNullException(nameof(orig));
@@ -1230,7 +1322,7 @@ namespace SmartLabelingApp
                     if (fillMask)
                     {
                         // 3) ROI 내부에 바로 블렌딩
-                        BlendMaskIntoOrigROI3(over, box, mask, mw, mh, r.NetSize, r.Scale, r.PadX, r.PadY, maskThr, alpha, color);
+                        BlendMaskIntoOrigROI(over, box, mask, mw, mh, r.NetSize, r.Scale, r.PadX, r.PadY, maskThr, alpha, color);
                     }
                     if (drawoutlines)
                     {
@@ -1256,11 +1348,188 @@ namespace SmartLabelingApp
             return over;
         }
 
+        private static void BlendMaskIntoOrigROI_Batched(
+    BitmapData data, int imgW, int imgH,
+    Rectangle boxOrig, float[] mask, int mw, int mh, int netSize,
+    float scale, int padX, int padY, float thr, float alpha, Color color)
+        {
+            // ----- 파라미터/상수 -----
+            float sx = (float)mw / netSize;
+            float sy = (float)mh / netSize;
+
+            int x0 = Math.Max(0, boxOrig.Left);
+            int y0 = Math.Max(0, boxOrig.Top);
+            int x1 = Math.Min(imgW, boxOrig.Right);
+            int y1 = Math.Min(imgH, boxOrig.Bottom);
+            if (x0 >= x1 || y0 >= y1) return;
+
+            int roiW = x1 - x0;
+            int roiH = y1 - y0;
+
+            byte rr = color.R, gg = color.G, bb = color.B;
+            float a = Math.Max(0f, Math.Min(1f, alpha));
+            float ia = 1f - a;
+            float thrF = Math.Max(0f, Math.Min(1f, thr));
+
+            // ----- 좌표/가중치 사전계산 -----
+            int[] u0_arr = new int[roiW];
+            float[] fu0_arr = new float[roiW];
+            float[] fu1_arr = new float[roiW];
+            for (int i = 0; i < roiW; i++)
+            {
+                float u = (((x0 + i) * scale) + padX) * sx;
+                int u0 = (int)Math.Floor(u);
+                float fu = u - u0;
+                u0_arr[i] = u0;
+                fu0_arr[i] = 1f - fu;
+                fu1_arr[i] = fu;
+            }
+
+            int[] v0_arr = new int[roiH];
+            float[] fv0_arr = new float[roiH];
+            float[] fv1_arr = new float[roiH];
+            for (int j = 0; j < roiH; j++)
+            {
+                float v = (((y0 + j) * scale) + padY) * sy;
+                int v0 = (int)Math.Floor(v);
+                float fv = v - v0;
+                v0_arr[j] = v0;
+                fv0_arr[j] = 1f - fv;
+                fv1_arr[j] = fv;
+            }
+
+            // ----- 실제 블렌딩 -----
+            unsafe
+            {
+                byte* basePtr = (byte*)data.Scan0;
+                int stride = data.Stride;
+
+                // IntPtr로 캡처 후 람다에서 포인터 재구성(병렬 대비 안전)
+                IntPtr baseAddr, maskAddr, u0Addr, fu0Addr, fu1Addr, v0Addr, fv0Addr, fv1Addr;
+                fixed (float* pmask = mask)
+                fixed (int* pu0 = u0_arr)
+                fixed (float* pfu0 = fu0_arr, pfu1 = fu1_arr)
+                fixed (int* pv0 = v0_arr)
+                fixed (float* pfv0 = fv0_arr, pfv1 = fv1_arr)
+                {
+                    baseAddr = (IntPtr)basePtr;
+                    maskAddr = (IntPtr)pmask;
+                    u0Addr = (IntPtr)pu0;
+                    fu0Addr = (IntPtr)pfu0;
+                    fu1Addr = (IntPtr)pfu1;
+                    v0Addr = (IntPtr)pv0;
+                    fv0Addr = (IntPtr)pfv0;
+                    fv1Addr = (IntPtr)pfv1;
+                }
+
+                // ROI가 작으면 단일 스레드, 크면 병렬
+                long pixels = (long)roiW * roiH;
+                bool useParallel = pixels >= 80000;
+
+                if (!useParallel)
+                {
+                    float* pmask = (float*)maskAddr;
+                    int* pu0 = (int*)u0Addr;
+                    float* pfu0 = (float*)fu0Addr;
+                    float* pfu1 = (float*)fu1Addr;
+                    int* pv0 = (int*)v0Addr;
+                    float* pfv0 = (float*)fv0Addr;
+                    float* pfv1 = (float*)fv1Addr;
+
+                    for (int j = 0; j < roiH; j++)
+                    {
+                        int y = y0 + j;
+                        int v0 = pv0[j];
+                        if ((uint)v0 >= (uint)mh - 1) continue;
+
+                        float wv0 = pfv0[j], wv1 = pfv1[j];
+                        byte* p = ((byte*)baseAddr) + y * stride + (x0 * 4);
+                        int base00 = v0 * mw;
+                        int base01 = base00 + mw;
+
+                        for (int i = 0; i < roiW; i++)
+                        {
+                            int u0 = pu0[i];
+                            if ((uint)u0 >= (uint)mw - 1) { p += 4; continue; }
+
+                            float wu0 = pfu0[i], wu1 = pfu1[i];
+
+                            float m00 = pmask[base00 + u0];
+                            float m10 = pmask[base00 + u0 + 1];
+                            float m01 = pmask[base01 + u0];
+                            float m11 = pmask[base01 + u0 + 1];
+
+                            float mx0 = m00 * wu0 + m10 * wu1;
+                            float mx1 = m01 * wu0 + m11 * wu1;
+                            float m = mx0 * wv0 + mx1 * wv1;
+
+                            if (m < thrF) { p += 4; continue; }
+
+                            p[0] = (byte)(p[0] * ia + bb * a);
+                            p[1] = (byte)(p[1] * ia + gg * a);
+                            p[2] = (byte)(p[2] * ia + rr * a);
+                            p[3] = 255;
+                            p += 4;
+                        }
+                    }
+                }
+                else
+                {
+                    int proc = Environment.ProcessorCount;
+                    Parallel.For(0, roiH, new ParallelOptions { MaxDegreeOfParallelism = proc }, j =>
+                    {
+                        byte* baseP = (byte*)baseAddr;
+                        float* pmask = (float*)maskAddr;
+                        int* pu0 = (int*)u0Addr;
+                        float* pfu0 = (float*)fu0Addr;
+                        float* pfu1 = (float*)fu1Addr;
+                        int* pv0 = (int*)v0Addr;
+                        float* pfv0 = (float*)fv0Addr;
+                        float* pfv1 = (float*)fv1Addr;
+
+                        int y = y0 + j;
+                        int v0 = pv0[j];
+                        if ((uint)v0 >= (uint)mh - 1) return;
+
+                        float wv0 = pfv0[j], wv1 = pfv1[j];
+                        byte* p = baseP + y * stride + (x0 * 4);
+                        int base00 = v0 * mw;
+                        int base01 = base00 + mw;
+
+                        for (int i = 0; i < roiW; i++)
+                        {
+                            int u0 = pu0[i];
+                            if ((uint)u0 >= (uint)mw - 1) { p += 4; continue; }
+
+                            float wu0 = pfu0[i], wu1 = pfu1[i];
+
+                            float m00 = pmask[base00 + u0];
+                            float m10 = pmask[base00 + u0 + 1];
+                            float m01 = pmask[base01 + u0];
+                            float m11 = pmask[base01 + u0 + 1];
+
+                            float mx0 = m00 * wu0 + m10 * wu1;
+                            float mx1 = m01 * wu0 + m11 * wu1;
+                            float m = mx0 * wv0 + mx1 * wv1;
+
+                            if (m < thrF) { p += 4; continue; }
+
+                            p[0] = (byte)(p[0] * ia + bb * a);
+                            p[1] = (byte)(p[1] * ia + gg * a);
+                            p[2] = (byte)(p[2] * ia + rr * a);
+                            p[3] = 255;
+                            p += 4;
+                        }
+                    });
+                }
+            }
+        }
+
         // Render: OverlayFast 실행 + 오버레이 목록을 같이 반환
         public static OverlayResult Render(Bitmap orig, SegResult r, float maskThr = 0.65f, float alpha = 0.45f, bool drawBoxes = false, bool drawScores = true)
         {
             var list = new List<SmartLabelingApp.ImageCanvas.OverlayItem>();
-            var bmp = OverlayFast(orig, r, maskThr, alpha, drawBoxes, drawScores, overlaysOut: list);
+            var bmp = OverlaySuperFast(orig, r, maskThr, alpha, drawBoxes, drawScores, overlaysOut: list);
             return new OverlayResult { Image = bmp, Overlays = list };
         }
 
