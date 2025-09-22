@@ -74,25 +74,6 @@ namespace SmartLabelingApp
 
         #endregion
 
-        #region Logging
-        private static void Log(string msg)
-        {
-            var line = $"[YoloSegOnnx {DateTime.Now:HH:mm:ss.fff}] {msg}";
-            try { Debug.WriteLine(line); } catch { }
-        }
-        private static string JoinDims(ReadOnlySpan<int> dims)
-        {
-            if (dims.Length == 0) return "";
-            var sb = new StringBuilder();
-            for (int i = 0; i < dims.Length; i++)
-            {
-                if (i > 0) sb.Append(',');
-                sb.Append(dims[i].ToString());
-            }
-            return sb.ToString();
-        }
-        #endregion
-
         #region Types
         // ----- 추론 결과 컨테이너 -----
         public sealed class SegResult
@@ -275,10 +256,8 @@ namespace SmartLabelingApp
             try
             {
                 so = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL };
-                Log("Trying CUDA EP...");
                 if (!TryAppendCudaWithOptions(so)) so.AppendExecutionProvider_CUDA(0);
                 var sess = new InferenceSession(modelPath, so);
-                Log("Session created with CUDA EP.");
                 EnsureInputBuffers(sess, 640);
                 TryWarmup(sess, 640);
                 SmartLabelingApp.MainForm._currentRunTypeName = "CUDA EP";
@@ -286,17 +265,13 @@ namespace SmartLabelingApp
             }
             catch (Exception ex)
             {
-                Log("CUDA EP failed, will try DML EP.");
-                Log(ex.ToString());
                 try { so?.Dispose(); } catch { }
             }
             try
             {
                 so = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL };
-                Log("Trying DML EP...");
                 so.AppendExecutionProvider_DML();
                 var sess = new InferenceSession(modelPath, so);
-                Log("Session created with DML EP.");
                 EnsureInputBuffers(sess, 640);
                 TryWarmup(sess, 640);
                 SmartLabelingApp.MainForm._currentRunTypeName = "DML EP";
@@ -304,14 +279,10 @@ namespace SmartLabelingApp
             }
             catch (Exception ex)
             {
-                Log("DML EP failed, falling back to CPU.");
-                Log(ex.ToString());
                 try { so?.Dispose(); } catch { }
             }
             var soCpu = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL };
-            Log("Creating CPU session...");
             var cpu = new InferenceSession(modelPath, soCpu);
-            Log("CPU session created.");
             EnsureInputBuffers(cpu, 640);
             SmartLabelingApp.MainForm._currentRunTypeName = "CPU";
             return cpu;
@@ -405,15 +376,12 @@ namespace SmartLabelingApp
         // --------------------------------------------------------------------------------
         public static SegResult Infer(InferenceSession session, Bitmap orig, float conf = 0.9f, float iou = 0.45f, float minBoxAreaRatio = 0.003f, float minMaskAreaRatio = 0.003f, bool discardTouchingBorder = true)
         {
-            Log("Infer(session, bitmap) called");
             var sw = Stopwatch.StartNew();
             double tSession = 0, tPrev = 0, tPre = 0, tInfer = 0, tPost = 0;
 
             // 입력 이름/크기 확인
             string inputName = session.InputMetadata.Keys.First();
             var inMeta = session.InputMetadata[inputName];
-            Log($"Session OK. Input name: {inputName}");
-            try { Log($"Input dims: [{JoinDims(inMeta.Dimensions)}]"); } catch { }
 
             // netSize 결정(메타에 음수가 있으면 기본 640 사용)
             int netH = 640, netW = 640;
@@ -428,13 +396,10 @@ namespace SmartLabelingApp
             }
             catch { }
             int netSize = Math.Max(netH, netW);
-            Log($"Chosen netSize: {netSize}");
 
             // 입력 텐서 채우기
             EnsureInputBuffers(session, netSize);
             FillTensorFromBitmap(orig, netSize, out float scale, out int padX, out int padY, out Size resized);
-            Log($"Letterbox: scale={scale:F6}, padX={padX}, padY={padY}, resized={resized.Width}x{resized.Height}");
-            Log($"Input tensor ready: [1,3,{netSize},{netSize}]");
             tPre = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
 
             // 추론 실행
@@ -442,14 +407,13 @@ namespace SmartLabelingApp
             try
             {
                 outputs = session.Run(new[] { _nov });
-                Log($"session.Run() returned {outputs.Count} outputs");
                 tInfer = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
 
                 // 출력 중 3D(Det), 4D(Proto) 텐서 선택 및 메타 읽기
                 for (int oi = 0; oi < outputs.Count; oi++)
                 {
-                    try { var t = outputs.ElementAt(oi).AsTensor<float>(); Log($"  out[{oi}] dims: [{JoinDims(t.Dimensions)}]"); }
-                    catch { Log($"  out[{oi}] not a float tensor?"); }
+                    try { var t = outputs.ElementAt(oi).AsTensor<float>();}
+                    catch { }
                 }
                 var t3 = outputs.First(v => v.AsTensor<float>().Dimensions.Length == 3).AsTensor<float>(); // Det head
                 var t4 = outputs.First(v => v.AsTensor<float>().Dimensions.Length == 4).AsTensor<float>(); // Proto
@@ -477,10 +441,6 @@ namespace SmartLabelingApp
                     numClasses = feat - 4 - segDim;
                 }
 
-                Log("Parsed heads:");
-                Log($"  det: channelsFirst={channelsFirst}, channels={channels}, nPred={nPred}, feat={feat}");
-                Log($"  proto: segDim={segDim}, mh={mh}, mw={mw}");
-                Log($"  numClasses={numClasses}");
                 if (numClasses <= 0) throw new InvalidOperationException($"Invalid head layout. feat={feat}, segDim={segDim}");
 
                 // 좌표 스케일 보정: 모델이 [0~1] 스케일 좌표를 내는 케이스 고려
@@ -498,7 +458,6 @@ namespace SmartLabelingApp
                     }
                     if (maxWH <= 3.5f) coordScale = netSize; // 너무 작으면 [0~1]로 보고 netSize 곱
                 }
-                Log($"coordScale={coordScale:F6}");
 
                 // 박스/점수/클래스/마스크계수 파싱 + conf 필터
                 var dets = new List<Det>(256);
@@ -527,9 +486,7 @@ namespace SmartLabelingApp
                     dets.Add(new Det { Box = new RectangleF(l, t, r - l, btm - t), Score = bestS, ClassId = bestC, Coeff = coeff });
                 }
 
-                Log($"Detections after conf filter: {dets.Count}");
                 if (dets.Count > 0) dets = Nms(dets, iou); // 2차 필터: NMS
-                Log($"Detections after NMS (iou={iou}): {dets.Count}");
                 tPost = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
 
                 // Proto(4D)는 1차원 배열로 저장
