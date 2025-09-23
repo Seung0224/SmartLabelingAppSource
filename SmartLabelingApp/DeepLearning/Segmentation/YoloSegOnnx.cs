@@ -531,7 +531,7 @@ namespace SmartLabelingApp
                     for (int cidx = 0; cidx < numClasses; cidx++)
                     {
                         float raw = channelsFirst ? t3[0, 4 + cidx, i] : t3[0, i, 4 + cidx];
-                        float s = (raw < 0f || raw > 1f) ? Sigmoid(raw) : raw;
+                        float s = (raw < 0f || raw > 1f) ? MathUtils.Sigmoid(raw) : raw;
                         if (s > bestS) { bestS = s; bestC = cidx; }
                     }
                     if (bestS < conf) continue;
@@ -929,7 +929,7 @@ namespace SmartLabelingApp
                         {
                             float v = 0f;
                             for (int k = 0; k < segDim; k++) v += d.Coeff[k] * ProtoAt(k, yy, xx);
-                            mask[rowOff + xx] = Sigmoid(v);
+                            mask[rowOff + xx] = MathUtils.Sigmoid(v);
                         }
                     }
 
@@ -937,8 +937,8 @@ namespace SmartLabelingApp
                     using (var maskBmp = FloatMaskToBitmap(mask, mw, mh))
                     using (var up = ResizeBitmap(maskBmp, r.NetSize, r.NetSize))
                     {
-                        int cx = Clamp(r.PadX, 0, up.Width);
-                        int cy = Clamp(r.PadY, 0, up.Height);
+                        int cx = MathUtils.Clamp(r.PadX, 0, up.Width);
+                        int cy = MathUtils.Clamp(r.PadY, 0, up.Height);
                         int cw = Math.Min(r.Resized.Width, up.Width - cx);
                         int ch = Math.Min(r.Resized.Height, up.Height - cy);
                         if (cw <= 0 || ch <= 0) continue;
@@ -1378,10 +1378,10 @@ namespace SmartLabelingApp
             float t = (boxNet.Top - padY) / scale;
             float r = (boxNet.Right - padX) / scale;
             float b = (boxNet.Bottom - padY) / scale;
-            int x = (int)Math.Round(Clamp(l, 0f, orig.Width - 1));
-            int y = (int)Math.Round(Clamp(t, 0f, orig.Height - 1));
-            int xr = (int)Math.Round(Clamp(r, 0f, orig.Width - 1));
-            int yb = (int)Math.Round(Clamp(b, 0f, orig.Height - 1));
+            int x = (int)Math.Round(MathUtils.Clamp(l, 0f, orig.Width - 1));
+            int y = (int)Math.Round(MathUtils.Clamp(t, 0f, orig.Height - 1));
+            int xr = (int)Math.Round(MathUtils.Clamp(r, 0f, orig.Width - 1));
+            int yb = (int)Math.Round(MathUtils.Clamp(b, 0f, orig.Height - 1));
             int w = xr - x;
             int h = yb - y;
             return new Rectangle(x, y, Math.Max(1, w), Math.Max(1, h));
@@ -1433,8 +1433,8 @@ namespace SmartLabelingApp
                     int strideDst = dDst.Stride;
                     int strideMsk = dMsk.Stride;
                     byte rr = color.R, gg = color.G, bb = color.B;
-                    byte thresh = (byte)Clamp(thr * 255f, 0f, 255f);
-                    float a = Clamp(alpha, 0f, 1f);
+                    byte thresh = (byte)MathUtils.Clamp(thr * 255f, 0f, 255f);
+                    float a = MathUtils.Clamp(alpha, 0f, 1f);
                     for (int y = 0; y < rect.Height; y++)
                     {
                         byte* rowDst = pDst + y * strideDst;
@@ -1478,7 +1478,7 @@ namespace SmartLabelingApp
                         int off = y * w;
                         for (int x = 0; x < w; x++)
                         {
-                            byte v = ClampByte((int)(m[off + x] * 255f + 0.5f));
+                            byte v = MathUtils.ClampByte((int)(m[off + x] * 255f + 0.5f));
                             int idx = x * 4;
                             row[idx + 0] = v;
                             row[idx + 1] = v;
@@ -1514,12 +1514,6 @@ namespace SmartLabelingApp
             var rng = new Random(cls * 123457);
             return Color.FromArgb(255, rng.Next(64, 255), rng.Next(64, 255), rng.Next(64, 255));
         }
-
-        // 수학/도움 함수
-        private static float Sigmoid(float x) => 1f / (1f + (float)Math.Exp(-x));
-        private static float Clamp(float v, float min, float max) => v < min ? min : (v > max ? max : v);
-        private static int Clamp(int v, int min, int max) => v < min ? min : (v > max ? max : v);
-        private static byte ClampByte(int v) => (byte)(v < 0 ? 0 : (v > 255 ? 255 : v));
 
         // NMS
         private static List<Det> Nms(List<Det> dets, float iouThr)

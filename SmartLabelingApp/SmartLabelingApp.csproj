@@ -52,6 +52,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="DeepLearning\Segmentation\Utils\MathUtils.cs" />
     <Compile Include="Labeling\AI\AIInterfcae.cs" />
     <Compile Include="Labeling\AI\AISegmenterOpenCV.cs" />
     <Compile Include="Labeling\AI\AITool.cs" />
@@ -92,8 +93,8 @@
     <Compile Include="Labeling\Tools\EraserTool.cs" />
     <Compile Include="Labeling\Tools\MaskTool.cs" />
     <Compile Include="Labeling\Util\PathBoolean.cs" />
-    <Compile Include="Labeling\Util\YoloSegEngine.cs" />
-    <Compile Include="Labeling\Util\YoloSegOnnx.cs" />
+    <Compile Include="DeepLearning\Segmentation\YoloSegEngine.cs" />
+    <Compile Include="DeepLearning\Segmentation\YoloSegOnnx.cs" />
     <Compile Include="MainForm.cs">
       <SubType>Form</SubType>
     </Compile>

@@ -8,8 +8,7 @@ namespace SmartLabelingApp
         public const float HandleSize = 8f;          // 화면 픽셀
         public const float MinRectSizeImg = 2f;      // 이미지 좌표
 
-        public static float Clamp(float v, float min, float max)
-            => v < min ? min : (v > max ? max : v);
+        public static float Clamp(float v, float min, float max) => v < min ? min : (v > max ? max : v);
 
         public static RectangleF Normalize(RectangleF r)
         {

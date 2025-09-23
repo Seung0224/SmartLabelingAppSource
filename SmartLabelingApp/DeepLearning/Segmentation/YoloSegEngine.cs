@@ -430,8 +430,6 @@ namespace SmartLabelingApp
             return new Rectangle(x, y, w, h);
         }
 
-        private static int Clamp(int v, int lo, int hi) => v < lo ? lo : (v > hi ? hi : v);
-        private static float Sigmoid(float x) => 1f / (1f + (float)Math.Exp(-x));
 
         private static List<Det> Nms(List<Det> dets, float iouThr)
         {
