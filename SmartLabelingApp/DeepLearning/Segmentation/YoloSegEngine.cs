@@ -77,6 +77,8 @@ namespace SmartLabelingApp
 
         #endregion
 
+        private ProtoLayout _protoLayout = ProtoLayout.Unknown;
+
         private IntPtr _h = IntPtr.Zero;
         private readonly int _deviceId;
         private int _cachedInputNet = -1;        // 엔진 고정 입력(정사각) 추론용 힌트
@@ -145,7 +147,7 @@ namespace SmartLabelingApp
             }
             trt_free(detPtr);
 
-            // ---- 4) 전치 (C,M → M,C 로 변환)
+            // ---- 4) 전치 (C,M → M,C 로 변환)  [det 헤더 배열용]
             if (detC > 512 && nDet <= 512)
             {
                 int M = detC, C = nDet;
@@ -196,20 +198,20 @@ namespace SmartLabelingApp
                 float w = detFlat[baseIdx + 2] * coordScale;
                 float h = detFlat[baseIdx + 3] * coordScale;
 
-                // ---- cls 점수만 (obj 곱 제거)
+                // cls 점수만 (obj 곱 제거)
                 int bestC = 0; float bestS = 0f;
                 for (int c = 0; c < numClasses; c++)
                 {
                     float raw = detFlat[baseIdx + 4 + c];
-                    float s = (raw < 0f || raw > 1f) ? 1f / (1f + (float)Math.Exp(-raw)) : raw;
+                    float s = (raw < 0f || raw > 1f) ? (1f / (1f + (float)Math.Exp(-raw))) : raw;
                     if (s > bestS) { bestS = s; bestC = c; }
                 }
                 if (bestS < conf) continue;
 
-                // ---- 작은 박스 필터만 유지
+                // 작은 박스 필터(2px 미만 스킵)
                 float l = x - w / 2f, t = y - h / 2f, r = x + w / 2f, b = y + h / 2f;
                 float bw = r - l, bh = b - t;
-                if (bw < 2 || bh < 2) continue; // 2픽셀 미만만 스킵
+                if (bw < 2 || bh < 2) continue;
 
                 var coeff = new float[segDim];
                 Array.Copy(detFlat, baseIdx + 4 + numClasses, coeff, 0, segDim);
@@ -228,6 +230,24 @@ namespace SmartLabelingApp
             }
 
             if (dets.Count > 0) dets = Postprocess.Nms(dets, d => d.Box, d => d.Score, iou);
+
+            // ---- 7.5) Proto 레이아웃 감지 & 전치(HWK→KHW)  [여기 추가]
+            //  - 첫 프레임에만 감지해서 _protoLayout 캐시
+            if (_protoLayout == ProtoLayout.Unknown && dets.Count > 0)
+            {
+                var coeffSample = dets[0].Coeff; // 상위 1개만으로도 충분
+                _protoLayout = ProtoUtils.DetectByVariance(coeffSample, proto, segDim, mw, mh);
+                Trace.WriteLine($"[TRT] Proto layout detected = {_protoLayout}");
+            }
+            //  - HWK이면 이번 프레임 proto를 KHW로 전치
+            if (_protoLayout == ProtoLayout.HWK)
+            {
+                var transposedKHW = new float[segDim * mw * mh];
+                ProtoUtils.TransposeHWKtoKHW(proto, segDim, mw, mh, transposedKHW);
+                proto = transposedKHW;
+                Trace.WriteLine("[TRT] Proto HWK → KHW transposed");
+            }
+
             tPost = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
             Trace.WriteLine($"[TRT] Parsed det rows | total={nPred}, kept={kept}, afterNms={dets.Count}, postMs={tPost:F1}");
 
@@ -242,7 +262,7 @@ namespace SmartLabelingApp
                 SegDim = segDim,
                 MaskH = mh,
                 MaskW = mw,
-                ProtoFlat = proto,
+                ProtoFlat = proto,   // ← 여기서부터는 KHW 보장
                 Dets = dets,
                 PreMs = tPre,
                 InferMs = tInfer,
@@ -254,14 +274,14 @@ namespace SmartLabelingApp
             return ret;
         }
 
+
         public Bitmap OverlayFast(Bitmap orig, SegResult r, float maskThr = 0.65f, float alpha = 0.45f, bool drawBoxes = false)
         {
             if (orig == null) throw new ArgumentNullException(nameof(orig));
             if (r == null || r.Dets == null || r.Dets.Count == 0)
             {
                 Trace.WriteLine("[TRT] OverlayFast() early return: no dets");
-                // orig 그대로 넘기면 Dispose 문제 생김 → 안전하게 Clone 반환
-                return (Bitmap)orig.Clone();
+                return (Bitmap)orig.Clone(); // 원본 반환 시 Dispose 문제 방지
             }
 
             Trace.WriteLine($"[TRT] OverlayFast() start | img={orig.Width}x{orig.Height}, net={r.NetSize}, proto: K={r.SegDim}, mask={r.MaskW}x{r.MaskH}, dets={r.Dets.Count}, thr={maskThr}, alpha={alpha}");
@@ -276,32 +296,14 @@ namespace SmartLabelingApp
                 if (_maskBufTLS == null || _maskBufTLS.Length < maskLen)
                     _maskBufTLS = new float[maskLen];
 
-                float[] maskKHW = new float[maskLen];
-                float[] maskHWK = new float[maskLen];
-
                 int di = 0;
                 foreach (var d in r.Dets)
                 {
-                    // 1) 마스크 생성 (KHW / HWK 모두)
-                    ComputeMask_NoAlloc(d.Coeff, r.ProtoFlat, r.SegDim, r.MaskW, r.MaskH, maskKHW);
-                    ComputeMask_NoAlloc_HWK(d.Coeff, r.ProtoFlat, r.SegDim, r.MaskW, r.MaskH, maskHWK);
+                    // 1) (표준) KHW로 마스크 합성 → _maskBufTLS에 채움
+                    MaskSynth.ComputeMask_KHW_NoAlloc(d.Coeff, r.ProtoFlat, r.SegDim, r.MaskW, r.MaskH, _maskBufTLS);
 
-                    // 2) 구조성 비교 → 더 안정적인 마스크 선택
-                    double meanK = 0, meanH = 0, varK = 0, varH = 0;
-                    for (int i = 0; i < maskLen; i++) { meanK += maskKHW[i]; meanH += maskHWK[i]; }
-                    meanK /= maskLen; meanH /= maskLen;
-                    for (int i = 0; i < maskLen; i++) { varK += (maskKHW[i] - meanK) * (maskKHW[i] - meanK); varH += (maskHWK[i] - meanH) * (maskHWK[i] - meanH); }
-                    varK /= maskLen; varH /= maskLen;
-
-                    bool useKHW = varK >= varH;
-                    Array.Copy(useKHW ? maskKHW : maskHWK, _maskBufTLS, maskLen);
-
-                    if (di < 4)
-                        Trace.WriteLine($"[TRT] mask stats det[{di}] | KHW var={varK:E2}, HWK var={varH:E2}, choose={(useKHW ? "KHW" : "HWK")}");
-
-                    // 3) netBox → origBox 변환
+                    // 2) netBox → origBox 변환
                     var origBox = Postprocess.NetBoxToOriginal(d.Box, r.Scale, r.PadX, r.PadY, r.Resized, r.OrigSize);
-
                     if (origBox == Rectangle.Empty)
                     {
                         Trace.WriteLine($"[TRT] overlay det[{di}] skipped (empty box)");
@@ -309,16 +311,23 @@ namespace SmartLabelingApp
                         continue;
                     }
 
-                    Trace.WriteLine($"[TRT] overlay det[{di}] | score={d.Score:F3}, cls={d.ClassId}, netBox=({d.Box.Left:F1},{d.Box.Top:F1},{d.Box.Right:F1},{d.Box.Bottom:F1}) -> origBox={origBox}");
+                    if (di < 4)
+                    {
+                        // 간단한 디버그(평균값) — 마스크가 0으로만 채워지는지 확인 용
+                        double mean = 0;
+                        for (int i = 0; i < maskLen; i++) mean += _maskBufTLS[i];
+                        mean /= maskLen;
+                        Trace.WriteLine($"[TRT] det[{di}] maskMean={mean:F4}, score={d.Score:F3}, cls={d.ClassId}");
+                    }
 
-                    // 4) ROI에 마스크 블렌딩
+                    // 3) ROI에 마스크 블렌딩
                     BlendMaskIntoOrigROI(
                         data, over.Width, over.Height,
                         origBox, _maskBufTLS, r.MaskW, r.MaskH, r.NetSize,
                         r.Scale, r.PadX, r.PadY,
                         maskThr, alpha, ClassColor(d.ClassId));
 
-                    // 5) 박스 옵션
+                    // 4) (옵션) 박스 표시
                     if (drawBoxes)
                     {
                         using (var g = Graphics.FromImage(over))
@@ -329,11 +338,15 @@ namespace SmartLabelingApp
                     di++;
                 }
             }
-            finally { over.UnlockBits(data); }
+            finally
+            {
+                over.UnlockBits(data);
+            }
 
             Trace.WriteLine("[TRT] OverlayFast() end");
             return over;
         }
+
 
         #endregion
 
@@ -348,57 +361,6 @@ namespace SmartLabelingApp
         #endregion
 
         #region Mask & Overlay (빠른 경로)
-        // segDim, mh, mw는 trt_infer에서 받은 값
-        // 레이아웃 확인: protoFlat.Length == segDim*mh*mw 인 것은 동일.
-        // 단, K의 위치가 마지막이면 이 함수로 계산
-        private static void ComputeMask_NoAlloc_HWK(float[] coeff, float[] protoFlatHWK, int segDim, int mw, int mh, float[] maskOut)
-        {
-            Parallel.For(0, mh, y =>
-            {
-                int row = y * mw;
-                for (int x = 0; x < mw; x++)
-                {
-                    float sum = 0f;
-                    int baseIdx = (y * mw + x) * segDim; // [H,W,K]
-                    for (int k = 0; k < segDim; k++)
-                        sum += coeff[k] * protoFlatHWK[baseIdx + k];
-                    maskOut[row + x] = 1f / (1f + (float)Math.Exp(-sum));
-                }
-            });
-        }
-        // mask = sigmoid( sum_k proto[k]*coeff[k] ), protoFlat: [segDim, mh, mw]
-        private static void ComputeMask_NoAlloc(float[] coeff, float[] protoFlat, int segDim, int mw, int mh, float[] maskOut)
-        {
-            int vec = Vector<float>.Count;
-            Parallel.For(0, mh, y =>
-            {
-                int rowOff = y * mw;
-                int x = 0;
-                for (; x <= mw - vec; x += vec)
-                {
-                    var sumV = new Vector<float>(0f);
-                    for (int k = 0; k < segDim; k++)
-                    {
-                        int off = ((k * mh + y) * mw) + x;
-                        var pV = new Vector<float>(protoFlat, off);
-                        var cV = new Vector<float>(coeff[k]);
-                        sumV += pV * cV;
-                    }
-                    for (int t = 0; t < vec; t++)
-                    {
-                        float s = sumV[t];
-                        maskOut[rowOff + x + t] = 1f / (1f + (float)Math.Exp(-s));
-                    }
-                }
-                for (; x < mw; x++)
-                {
-                    float sum = 0f;
-                    for (int k = 0; k < segDim; k++) sum += coeff[k] * protoFlat[(k * mh + y) * mw + x];
-                    maskOut[rowOff + x] = 1f / (1f + (float)Math.Exp(-sum));
-                }
-            });
-            // 원본 ONNX 파일의 SIMD 경로를 동일 컨셉으로 이식. :contentReference[oaicite:2]{index=2}
-        }
 
         private static void BlendMaskIntoOrigROI(BitmapData data, int imgW, int imgH, Rectangle boxOrig, float[] mask, int mw, int mh, int netSize, float scale, int padX, int padY, float thr, float alpha, Color color)
         {

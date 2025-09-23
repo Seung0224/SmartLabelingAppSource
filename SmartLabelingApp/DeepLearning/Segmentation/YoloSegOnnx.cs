@@ -15,6 +15,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using TheArtOfDevHtmlRenderer.Adapters.Entities;
+using static Microsoft.WindowsAPICodePack.Shell.PropertySystem.SystemProperties.System;
 using static OpenCvSharp.Stitcher;
 using static SmartLabelingApp.ImageCanvas;
 
@@ -150,7 +151,7 @@ namespace SmartLabelingApp
 
             // 할당 없는 버전으로 웜업 (패치 B에서 제공)
             var maskBuf = new float[mw * mh];
-            ComputeMaskSIMD_NoAlloc(coeff, proto, segDim, mw, mh, maskBuf);
+            MaskSynth.ComputeMask_KHW_NoAlloc(coeff, proto, segDim, mw, mh, maskBuf);
 
             // 3) 블렌딩도 한 번(아주 작은 ROI) — LockBits/JIT 따뜻하게
             using (var bmp = new Bitmap(32, 32, PixelFormat.Format32bppArgb))
@@ -331,7 +332,7 @@ namespace SmartLabelingApp
                 SmartLabelingApp.MainForm._currentRunTypeName = "CUDA EP";
                 return sess;
             }
-            catch (Exception ex)
+            catch
             {
                 try { so?.Dispose(); } catch { }
             }
@@ -345,7 +346,7 @@ namespace SmartLabelingApp
                 SmartLabelingApp.MainForm._currentRunTypeName = "DML EP";
                 return sess;
             }
-            catch (Exception ex)
+            catch
             {
                 try { so?.Dispose(); } catch { }
             }
