@@ -24,6 +24,7 @@ namespace SmartLabelingApp
     {
         #region 0) DeepLearning Fields
         private InferenceSession _onnxSession = null;
+        private YoloSegEngine _engineSession = null;
         #endregion
         #region 1) Constants & Static Data (상수/정적 데이터)
 
@@ -2793,14 +2794,55 @@ namespace SmartLabelingApp
 
 
 
+        private void DisposeCurrentModel()
+        {
+            try
+            {
+                _onnxSession?.Dispose();
+            }
+            catch { /* ignore */ }
+            finally { _onnxSession = null; }
+
+            try
+            {
+                _engineSession?.Dispose();
+            }
+            catch { /* ignore */ }
+            finally { _engineSession = null; }
+
+            _currentModelName = null;
+        }
+
+        // 모델 로더 (ONNX)
+        private Task LoadOnnxAsync(string onnxPath, IProgress<(int, string)> progress)
+        {
+            return Task.Run(() =>
+            {
+                // 필요 시 내부에서 warmup 수행 가능
+                _onnxSession = YoloSegOnnx.EnsureSession(onnxPath, progress);
+                _currentModelName = onnxPath;
+            });
+        }
+
+        // 모델 로더 (TensorRT)
+        private Task LoadEngineAsync(string enginePath)
+        {
+            return Task.Run(() =>
+            {
+                _engineSession = new YoloSegEngine(enginePath, deviceId: 0);
+                _currentModelName = enginePath;
+
+                // Warmup 부분 구현 필요
+            });
+        }
+
         private async void OnOpenClick(object sender, EventArgs e)
         {
             using (var dlg = new OpenFileDialog())
             {
-                dlg.Title = "이미지 파일 or 폴더 or 딥러닝(ONNX) 모델 열기";
-                dlg.Filter = "Image or Onnx|*.png;*.jpg;*.jpeg;*.bmp;*.onnx;|모든 파일|*.*";
+                dlg.Title = "이미지 파일 or 폴더 or 딥러닝 모델 열기";
+                dlg.Filter = "Image/Model|*.png;*.jpg;*.jpeg;*.bmp;*.onnx;*.engine|모든 파일|*.*";
                 dlg.Multiselect = false;
-
                 dlg.CheckFileExists = false;
                 dlg.ValidateNames = false;
                 dlg.FileName = "폴더를 선택하려면 이 항목을 클릭하세요";
@@ -2809,34 +2851,54 @@ namespace SmartLabelingApp
 
                 var chosen = dlg.FileName;
 
+                // 파일 경로인 경우
                 if (System.IO.File.Exists(chosen))
                 {
-                    var ext = System.IO.Path.GetExtension(chosen);
-                    if (!string.IsNullOrEmpty(ext) && ext.Equals(".onnx", StringComparison.OrdinalIgnoreCase))
-                    {
+                    var ext = System.IO.Path.GetExtension(chosen)?.ToLowerInvariant();
 
+                    // 1) 모델 로드 (.onnx / .engine)
+                    if (ext == ".onnx" || ext == ".engine")
+                    {
                         using (var overlay = new ProgressOverlay(this, "Loading model"))
                         {
                             var progress = new Progress<(int, string)>(p => overlay.Report(p.Item1, p.Item2));
                             try
                             {
-                                await Task.Run(() =>
-                                {
+                                // 이전 모델 정리
+                                DisposeCurrentModel();
 
-                                    _onnxSession = SmartLabelingApp.YoloSegOnnx.EnsureSession(chosen, progress);
-                                    _currentModelName = chosen;
-                                });
+                                if (ext == ".onnx")
+                                {
+                                    await LoadOnnxAsync(chosen, progress).ConfigureAwait(true);
+                                }
+                                else // .engine
+                                {
+                                    await LoadEngineAsync(chosen).ConfigureAwait(true);
+                                }
+                            }
+                            catch (DllNotFoundException dex)
+                            {
+                                DisposeCurrentModel();
+                                new Guna.UI2.WinForms.Guna2MessageDialog
+                                {
+                                    Parent = this,
+                                    Caption = "필수 DLL 누락",
+                                    Text = "TensorRT/CUDA DLL을 찾을 수 없습니다.\n" +
+                                           "nvinfer.dll, nvinfer_plugin.dll, cudart64_xxx.dll 등을 실행 폴더에 복사했는지 확인하세요.\n\n" +
+                                           dex.Message,
+                                    Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
+                                    Icon = Guna.UI2.WinForms.MessageDialogIcon.Error
+                                }.Show();
+                                return;
                             }
                             catch (Exception ex)
                             {
-                                _onnxSession = null;
-                                _currentModelName = null;
-
+                                DisposeCurrentModel();
                                 new Guna.UI2.WinForms.Guna2MessageDialog
                                 {
                                     Parent = this,
                                     Caption = "오류",
-                                    Text = $"ONNX 파일 열기 실패:\n{ex.Message}",
+                                    Text = $"딥러닝 모델 열기 실패:\n{ex.Message}",
                                     Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
                                     Icon = Guna.UI2.WinForms.MessageDialogIcon.Error
                                 }.Show();
@@ -2849,7 +2911,7 @@ namespace SmartLabelingApp
                         return;
                     }
 
-
+                    // 2) 이미지 파일
                     if (IsImageFile(chosen))
                     {
                         try
@@ -2867,33 +2929,33 @@ namespace SmartLabelingApp
                             MessageBox.Show(this, "이미지 로드 오류: " + ex.Message, "오류",
                                 MessageBoxButtons.OK, MessageBoxIcon.Error);
                         }
+                        return;
                     }
-                    else
+
+                    // 3) 그 외: 파일과 같은 폴더를 트리로 로드
+                    var parent = System.IO.Path.GetDirectoryName(chosen);
+                    if (!string.IsNullOrEmpty(parent) && System.IO.Directory.Exists(parent))
                     {
-                        var folder = System.IO.Path.GetDirectoryName(chosen);
-                        if (!string.IsNullOrEmpty(folder) && System.IO.Directory.Exists(folder))
-                        {
-                            PopulateTreeFromFolder(folder);
-                        }
+                        PopulateTreeFromFolder(parent);
                     }
                     return;
                 }
 
-                var maybeFolder = System.IO.Path.GetDirectoryName(chosen);
-                if (!string.IsNullOrEmpty(maybeFolder) && System.IO.Directory.Exists(maybeFolder))
-                {
-                    PopulateTreeFromFolder(maybeFolder);
-                    return;
-                }
-
+                // 폴더 선택 허용 (CheckFileExists=false + ValidateNames=false 사용 시)
                 if (System.IO.Directory.Exists(chosen))
                 {
                     PopulateTreeFromFolder(chosen);
                     return;
                 }
+
+                // 혹시 파일명이 가짜일 때 폴더 추정
+                var maybeFolder = System.IO.Path.GetDirectoryName(chosen);
+                if (!string.IsNullOrEmpty(maybeFolder) && System.IO.Directory.Exists(maybeFolder))
+                {
+                    PopulateTreeFromFolder(maybeFolder);
+                }
             }
         }
-
         private async Task AutoInferIfEnabledAsync()
         {
             if (!_toggleOn) return;

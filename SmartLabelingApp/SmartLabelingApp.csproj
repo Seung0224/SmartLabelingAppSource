@@ -92,6 +92,7 @@
     <Compile Include="Labeling\Tools\EraserTool.cs" />
     <Compile Include="Labeling\Tools\MaskTool.cs" />
     <Compile Include="Labeling\Util\PathBoolean.cs" />
+    <Compile Include="Labeling\Util\YoloSegEngine.cs" />
     <Compile Include="Labeling\Util\YoloSegOnnx.cs" />
     <Compile Include="MainForm.cs">
       <SubType>Form</SubType>
