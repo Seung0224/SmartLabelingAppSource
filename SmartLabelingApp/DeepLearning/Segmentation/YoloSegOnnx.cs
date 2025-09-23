@@ -367,66 +367,6 @@ namespace SmartLabelingApp
         }
         #endregion
 
-        #region Preprocessing
-        // --------------------------------------------------------------------------------
-        // FillTensorFromBitmap
-        // 1) 원본 크기(WxH)에서 네트 입력(net x net)에 맞게 비율 유지(scale)로 줄입니다.
-        // 2) 줄인 결과를 검은 바탕의 정사각형 캔버스(net x net) 중앙에 그립니다(padX/padY).
-        // 3) 픽셀을 읽어 [R,G,B] 채널 순서로 0~1로 정규화하여 _inBuf에 채웁니다.
-        //    (왜? ONNX 모델이 [1,3,net,net] float 텐서를 입력으로 기대하기 때문)
-        // 4) 이후 박스/마스크를 원본 좌표로 되돌리기 위해 scale/padX/padY/resized를 반환합니다.
-        // --------------------------------------------------------------------------------
-        static void FillTensorFromBitmap(Bitmap src, int net, out float scale, out int padX, out int padY, out Size resized)
-        {
-            int W = src.Width, H = src.Height;
-            scale = Math.Min((float)net / W, (float)net / H);          // 비율 유지 축소
-            int rw = (int)Math.Round(W * scale);
-            int rh = (int)Math.Round(H * scale);
-            padX = (net - rw) / 2;                                    // 중앙 정렬 패딩
-            padY = (net - rh) / 2;
-            resized = new Size(rw, rh);
-
-            // 24bpp RGB 백버퍼에 레터박싱된 이미지를 만든 뒤, 거기서 채널 분리
-            var tmp = new Bitmap(net, net, PixelFormat.Format24bppRgb);
-            using (var g = Graphics.FromImage(tmp))
-            {
-                g.Clear(Color.Black);
-                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Bilinear;
-                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
-                g.DrawImage(src, padX, padY, rw, rh);
-            }
-
-            // tmp를 잠그고 바이트를 읽어 [R,G,B] 순서로 float(0~1)로 저장
-            var rect = new Rectangle(0, 0, net, net);
-            var bd = tmp.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
-            try
-            {
-                unsafe
-                {
-                    byte* p0 = (byte*)bd.Scan0;
-                    int stride = bd.Stride;
-                    float inv255 = 1f / 255f;
-                    int plane = net * net; // 채널 평면 크기
-                    for (int y = 0; y < net; y++)
-                    {
-                        byte* row = p0 + y * stride;
-                        for (int x = 0; x < net; x++)
-                        {
-                            byte b = row[x * 3 + 0];
-                            byte g = row[x * 3 + 1];
-                            byte r = row[x * 3 + 2];
-                            int idx = y * net + x;
-                            _inBuf[0 * plane + idx] = r * inv255; // R
-                            _inBuf[1 * plane + idx] = g * inv255; // G
-                            _inBuf[2 * plane + idx] = b * inv255; // B
-                        }
-                    }
-                }
-            }
-            finally { tmp.UnlockBits(bd); }
-        }
-        #endregion
-
         #region INFER
         // --------------------------------------------------------------------------------
         // Infer
@@ -470,7 +410,7 @@ namespace SmartLabelingApp
             Trace.WriteLine($"[ONNX] Infer() start | net={netSize}, img={orig.Width}x{orig.Height}");
 
             EnsureInputBuffers(session, netSize);
-            FillTensorFromBitmap(orig, netSize, out float scale, out int padX, out int padY, out Size resized);
+            Preprocess.FillTensorFromBitmap(orig, netSize, _inBuf, out float scale, out int padX, out int padY, out Size resized);
             tPre = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
             Trace.WriteLine($"[ONNX] Preprocess done | resized={resized.Width}x{resized.Height}, pad=({padX},{padY}), scale={scale:F6}, preMs={tPre:F1}");
 

@@ -117,7 +117,7 @@ namespace SmartLabelingApp
 
             // ---- 1) 전처리
             EnsureInputBuffer(net);
-            FillTensorFromBitmap(orig, net, _inBuf, out float scale, out int padX, out int padY, out Size resized);
+            Preprocess.FillTensorFromBitmap(orig, net, _inBuf, out float scale, out int padX, out int padY, out Size resized);
             tPre = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
             Trace.WriteLine($"[TRT] Preprocess done | resized={resized.Width}x{resized.Height}, pad=({padX},{padY}), scale={scale:F6}, preMs={tPre:F1}");
 
@@ -345,53 +345,6 @@ namespace SmartLabelingApp
             if (_inBuf == null || _inBuf.Length != need) _inBuf = new float[need];
         }
 
-        private static void FillTensorFromBitmap(Bitmap src, int net, float[] outNCHW, out float scale, out int padX, out int padY, out Size resized)
-        {
-            int W = src.Width, H = src.Height;
-            scale = Math.Min((float)net / W, (float)net / H);
-            int rw = (int)Math.Round(W * scale);
-            int rh = (int)Math.Round(H * scale);
-            padX = (net - rw) / 2;
-            padY = (net - rh) / 2;
-            resized = new Size(rw, rh);
-
-            var tmp = new Bitmap(net, net, PixelFormat.Format24bppRgb);
-            using (var g = Graphics.FromImage(tmp))
-            {
-                g.Clear(Color.Black);
-                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Bilinear;
-                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
-                g.DrawImage(src, padX, padY, rw, rh);
-            }
-
-            var rect = new Rectangle(0, 0, net, net);
-            var bd = tmp.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
-            try
-            {
-                unsafe
-                {
-                    byte* p0 = (byte*)bd.Scan0;
-                    int stride = bd.Stride;
-                    float inv255 = 1f / 255f;
-                    int plane = net * net;
-                    for (int y = 0; y < net; y++)
-                    {
-                        byte* row = p0 + y * stride;
-                        for (int x = 0; x < net; x++)
-                        {
-                            byte b = row[x * 3 + 0];
-                            byte g = row[x * 3 + 1];
-                            byte r = row[x * 3 + 2];
-                            int idx = y * net + x;
-                            outNCHW[0 * plane + idx] = r * inv255;
-                            outNCHW[1 * plane + idx] = g * inv255;
-                            outNCHW[2 * plane + idx] = b * inv255;
-                        }
-                    }
-                }
-            }
-            finally { tmp.UnlockBits(bd); }
-        }
 
         private static Rectangle NetBoxToOriginal(RectangleF netBox, float scale, int padX, int padY, Size resized, Size origSize)
         {
