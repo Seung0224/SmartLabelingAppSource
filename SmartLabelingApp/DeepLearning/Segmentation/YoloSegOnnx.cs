@@ -14,6 +14,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using TheArtOfDevHtmlRenderer.Adapters.Entities;
 using static OpenCvSharp.Stitcher;
 using static SmartLabelingApp.ImageCanvas;
 
@@ -488,7 +489,7 @@ namespace SmartLabelingApp
                         Trace.WriteLine($"[ONNX] det[{i}] keep | box=({l:F1},{t:F1},{r:F1},{btm:F1}), score={bestS:F3}, cls={bestC}");
                 }
 
-                if (dets.Count > 0) dets = Nms(dets, iou);
+                if (dets.Count > 0) dets = Postprocess.Nms(dets, d => d.Box, d => d.Score, iou);
                 tPost = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
                 Trace.WriteLine($"[ONNX] Parsed det rows | total={nPred}, kept={kept}, afterNms={dets.Count}, postMs={tPost:F1}");
 
@@ -887,7 +888,8 @@ namespace SmartLabelingApp
                         using (var toOrig = ResizeBitmap(cropped, orig.Width, orig.Height))
                         {
                             // 3) 박스 ROI 밖은 0으로 (마스크 누수 방지)
-                            var boxOrig = NetBoxToOriginal(d.Box, r.Scale, r.PadX, r.PadY, r.Resized, r.OrigSize);
+                            var boxOrig = Postprocess.NetBoxToOriginal(d.Box, r.Scale, r.PadX, r.PadY, r.Resized, r.OrigSize);
+                            
                             ZeroOutsideRect(toOrig, boxOrig);
 
                             // 4) 색상+알파로 합성 + 외곽선/박스/배지 오버레이
@@ -945,7 +947,7 @@ namespace SmartLabelingApp
                     ComputeMaskSIMD_NoAlloc(d.Coeff, proto, segDim, mw, mh, _maskBufTLS);
 
                     // 박스 원본 좌표 변환
-                    var box = NetBoxToOriginal(d.Box, r.Scale, r.PadX, r.PadY, r.Resized, r.OrigSize);
+                    var box = Postprocess.NetBoxToOriginal(d.Box, r.Scale, r.PadX, r.PadY, r.Resized, r.OrigSize);
                     var color = ClassColor(d.ClassId);
 
                     // 내부 채움 요청 시: BitmapData에 직접 블렌딩 (여기서 LockBits 추가 호출 없음)
@@ -1311,22 +1313,6 @@ namespace SmartLabelingApp
                 : $"Unknown({value})";
         }
 
-        // 네트 좌표 박스를 원본 좌표 박스로 변환(레터박스 역변환)
-        private static Rectangle NetBoxToOriginal(RectangleF boxNet, float scale, int padX, int padY, Size resized, Size orig)
-        {
-            float l = (boxNet.Left - padX) / scale;
-            float t = (boxNet.Top - padY) / scale;
-            float r = (boxNet.Right - padX) / scale;
-            float b = (boxNet.Bottom - padY) / scale;
-            int x = (int)Math.Round(MathUtils.Clamp(l, 0f, orig.Width - 1));
-            int y = (int)Math.Round(MathUtils.Clamp(t, 0f, orig.Height - 1));
-            int xr = (int)Math.Round(MathUtils.Clamp(r, 0f, orig.Width - 1));
-            int yb = (int)Math.Round(MathUtils.Clamp(b, 0f, orig.Height - 1));
-            int w = xr - x;
-            int h = yb - y;
-            return new Rectangle(x, y, Math.Max(1, w), Math.Max(1, h));
-        }
-
         // ROI 밖은 마스크를 0으로(누수 방지)
         private static void ZeroOutsideRect(Bitmap maskGray, Rectangle rect)
         {
@@ -1453,32 +1439,6 @@ namespace SmartLabelingApp
         {
             var rng = new Random(cls * 123457);
             return Color.FromArgb(255, rng.Next(64, 255), rng.Next(64, 255), rng.Next(64, 255));
-        }
-
-        // NMS
-        private static List<Det> Nms(List<Det> dets, float iouThr)
-        {
-            var keep = new List<Det>();
-            var sorted = dets.OrderByDescending(d => d.Score).ToList();
-            while (sorted.Count > 0)
-            {
-                var a = sorted[0];
-                keep.Add(a);
-                sorted.RemoveAt(0);
-                for (int i = sorted.Count - 1; i >= 0; i--) if (IoU(a.Box, sorted[i].Box) > iouThr) sorted.RemoveAt(i);
-            }
-            return keep;
-        }
-
-        private static float IoU(RectangleF a, RectangleF b)
-        {
-            float x1 = Math.Max(a.Left, b.Left);
-            float y1 = Math.Max(a.Top, b.Top);
-            float x2 = Math.Min(a.Right, b.Right);
-            float y2 = Math.Min(a.Bottom, b.Bottom);
-            float inter = Math.Max(0, x2 - x1) * Math.Max(0, y2 - y1);
-            float ua = a.Width * a.Height + b.Width * b.Height - inter + 1e-6f;
-            return inter / ua;
         }
 
         // 진행률 보고(옵션)

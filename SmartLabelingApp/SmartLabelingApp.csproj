@@ -53,6 +53,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="DeepLearning\Segmentation\Core\MathUtils.cs" />
+    <Compile Include="DeepLearning\Segmentation\Core\Postprocess.cs" />
     <Compile Include="DeepLearning\Segmentation\Core\Preprocess.cs" />
     <Compile Include="Labeling\AI\AIInterfcae.cs" />
     <Compile Include="Labeling\AI\AISegmenterOpenCV.cs" />

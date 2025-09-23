@@ -227,7 +227,7 @@ namespace SmartLabelingApp
                     Trace.WriteLine($"[TRT] det[{i}] keep | box=({l:F1},{t:F1},{r:F1},{b:F1}), score={bestS:F3}, cls={bestC}");
             }
 
-            if (dets.Count > 0) dets = Nms(dets, iou);
+            if (dets.Count > 0) dets = Postprocess.Nms(dets, d => d.Box, d => d.Score, iou);
             tPost = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
             Trace.WriteLine($"[TRT] Parsed det rows | total={nPred}, kept={kept}, afterNms={dets.Count}, postMs={tPost:F1}");
 
@@ -300,7 +300,7 @@ namespace SmartLabelingApp
                         Trace.WriteLine($"[TRT] mask stats det[{di}] | KHW var={varK:E2}, HWK var={varH:E2}, choose={(useKHW ? "KHW" : "HWK")}");
 
                     // 3) netBox → origBox 변환
-                    var origBox = NetBoxToOriginal(d.Box, r.Scale, r.PadX, r.PadY, r.Resized, r.OrigSize);
+                    var origBox = Postprocess.NetBoxToOriginal(d.Box, r.Scale, r.PadX, r.PadY, r.Resized, r.OrigSize);
 
                     if (origBox == Rectangle.Empty)
                     {
@@ -343,86 +343,6 @@ namespace SmartLabelingApp
         {
             int need = 1 * 3 * net * net;
             if (_inBuf == null || _inBuf.Length != need) _inBuf = new float[need];
-        }
-
-
-        private static Rectangle NetBoxToOriginal(RectangleF netBox, float scale, int padX, int padY, Size resized, Size origSize)
-        {
-            // net(640) → letterbox 제거 → 원본 좌표
-            float invScale = 1f / Math.Max(1e-6f, scale);
-            float l = (netBox.Left - padX) * invScale;
-            float t = (netBox.Top - padY) * invScale;
-            float r = (netBox.Right - padX) * invScale;
-            float b = (netBox.Bottom - padY) * invScale;
-
-            // clamp to original image bounds
-            l = Math.Max(0, Math.Min(origSize.Width - 1, l));
-            r = Math.Max(0, Math.Min(origSize.Width - 1, r));
-            t = Math.Max(0, Math.Min(origSize.Height - 1, t));
-            b = Math.Max(0, Math.Min(origSize.Height - 1, b));
-
-            // swap if inverted
-            if (r < l) { var tmp = l; l = r; r = tmp; }
-            if (b < t) { var tmp = t; t = b; b = tmp; }
-
-            int x = (int)Math.Floor(l);
-            int y = (int)Math.Floor(t);
-            int w = (int)Math.Ceiling(r - l);
-            int h = (int)Math.Ceiling(b - t);
-
-            // guard: invalid or too small box
-            if (w <= 0 || h <= 0)
-            {
-                return Rectangle.Empty;
-            }
-
-            // 최종 보정: 원본 크기 넘어가면 잘라냄
-            if (x + w > origSize.Width) w = origSize.Width - x;
-            if (y + h > origSize.Height) h = origSize.Height - y;
-
-            return new Rectangle(x, y, w, h);
-        }
-
-
-        private static List<Det> Nms(List<Det> dets, float iouThr)
-        {
-            if (dets.Count <= 1) return dets;
-            var order = dets
-                .Select((d, i) => (i, d.Score))
-                .OrderByDescending(t => t.Score)
-                .Select(t => t.i).ToList();
-
-            var keep = new List<Det>();
-            var suppressed = new bool[dets.Count];
-
-            for (int _i = 0; _i < order.Count; _i++)
-            {
-                int i = order[_i];
-                if (suppressed[i]) continue;
-                keep.Add(dets[i]);
-
-                var a = dets[i].Box;
-                float aArea = a.Width * a.Height;
-
-                for (int _j = _i + 1; _j < order.Count; _j++)
-                {
-                    int j = order[_j];
-                    if (suppressed[j]) continue;
-                    var b = dets[j].Box;
-
-                    float xx0 = Math.Max(a.Left, b.Left);
-                    float yy0 = Math.Max(a.Top, b.Top);
-                    float xx1 = Math.Min(a.Right, b.Right);
-                    float yy1 = Math.Min(a.Bottom, b.Bottom);
-                    float w = Math.Max(0, xx1 - xx0);
-                    float h = Math.Max(0, yy1 - yy0);
-                    float inter = w * h;
-                    float ovr = inter / (aArea + b.Width * b.Height - inter + 1e-6f);
-                    if (ovr > iouThr) suppressed[j] = true;
-                }
-            }
-            return keep;
-            // 참고: ONNX 버전 로직과 동일한 흐름. :contentReference[oaicite:1]{index=1}
         }
 
         #endregion
