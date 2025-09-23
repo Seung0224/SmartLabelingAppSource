@@ -36,18 +36,14 @@ namespace SmartLabelingApp
 
         // int trt_infer(handle, float* nchw, int len, float** detOut, int* nDet, int* detC, float** protoOut, int* segDim, int* maskH, int* maskW)
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
-        private static extern int trt_infer(
-            IntPtr handle,
-            float[] nchw, int nchwLength,
-            out IntPtr detOut, out int nDet, out int detC,
-            out IntPtr protoOut, out int segDim, out int maskH, out int maskW);
+        private static extern int trt_infer(IntPtr handle,float[] nchw, int nchwLength,out IntPtr detOut, out int nDet, out int detC,out IntPtr protoOut, out int segDim, out int maskH, out int maskW);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         private static extern void trt_free(IntPtr p);
 
         #endregion
 
-        #region Types (결과 형식은 ONNX 버전과 호환)
+        #region
 
         public sealed class SegResult
         {
@@ -258,10 +254,6 @@ namespace SmartLabelingApp
             return ret;
         }
 
-
-
-
-
         public Bitmap OverlayFast(Bitmap orig, SegResult r, float maskThr = 0.65f, float alpha = 0.45f, bool drawBoxes = false)
         {
             if (orig == null) throw new ArgumentNullException(nameof(orig));
@@ -343,11 +335,9 @@ namespace SmartLabelingApp
             return over;
         }
 
-
-
         #endregion
 
-        #region Preprocess / Math helpers (ONNX 흐름과 동일)
+        #region Preprocess / Math helpers
 
         private void EnsureInputBuffer(int net)
         {
@@ -403,9 +393,7 @@ namespace SmartLabelingApp
             finally { tmp.UnlockBits(bd); }
         }
 
-        private static Rectangle NetBoxToOriginal(
-    RectangleF netBox, float scale, int padX, int padY,
-    Size resized, Size origSize)
+        private static Rectangle NetBoxToOriginal(RectangleF netBox, float scale, int padX, int padY, Size resized, Size origSize)
         {
             // net(640) → letterbox 제거 → 원본 좌표
             float invScale = 1f / Math.Max(1e-6f, scale);
@@ -441,8 +429,6 @@ namespace SmartLabelingApp
 
             return new Rectangle(x, y, w, h);
         }
-
-
 
         private static int Clamp(int v, int lo, int hi) => v < lo ? lo : (v > hi ? hi : v);
         private static float Sigmoid(float x) => 1f / (1f + (float)Math.Exp(-x));
@@ -509,8 +495,6 @@ namespace SmartLabelingApp
                 }
             });
         }
-
-
         // mask = sigmoid( sum_k proto[k]*coeff[k] ), protoFlat: [segDim, mh, mw]
         private static void ComputeMask_NoAlloc(float[] coeff, float[] protoFlat, int segDim, int mw, int mh, float[] maskOut)
         {
@@ -545,11 +529,7 @@ namespace SmartLabelingApp
             // 원본 ONNX 파일의 SIMD 경로를 동일 컨셉으로 이식. :contentReference[oaicite:2]{index=2}
         }
 
-        private static void BlendMaskIntoOrigROI(
-    BitmapData data, int imgW, int imgH,
-    Rectangle boxOrig, float[] mask, int mw, int mh, int netSize,
-    float scale, int padX, int padY,
-    float thr, float alpha, Color color)
+        private static void BlendMaskIntoOrigROI(BitmapData data, int imgW, int imgH, Rectangle boxOrig, float[] mask, int mw, int mh, int netSize, float scale, int padX, int padY, float thr, float alpha, Color color)
         {
             // net(640) 좌표→mask 좌표 스케일
             float sx = (float)mw / netSize;
@@ -633,14 +613,12 @@ namespace SmartLabelingApp
             }
         }
 
-
         private static Color ClassColor(int id)
         {
             // 간단한 고정 팔레트
             Color[] tbl = { Color.Lime, Color.DeepSkyBlue, Color.Orange, Color.HotPink, Color.Gold, Color.MediumOrchid };
             return tbl[id % tbl.Length];
         }
-
         #endregion
     }
 }
