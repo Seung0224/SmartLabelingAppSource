@@ -3801,7 +3801,20 @@ namespace SmartLabelingApp
         // 공용: 원본(_sourceImage)로 추론 + 오버레이 생성 + 화면 적용까지 한 번에 수행
         private async Task<bool> RunInferenceAndApplyAsync(CancellationToken token = default)
         {
-            YoloSegOnnx.OverlayResult result = default;
+            // 공통 로그 편의를 위해
+            void Log(string msg) => AddLog(msg);
+
+            // 엔진이 하나도 없으면 종료
+            if (_onnxSession == null && _engineSession == null)
+            {
+                MessageBox.Show(this, "모델이 로드되지 않았습니다. 먼저 .onnx 또는 .engine 파일을 여세요.",
+                    "안내", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return false;
+            }
+
+            // 원본은 UI 스레드에서 사용 중일 수 있으니, Task 내부에서만 복제한 사본 사용
+            YoloSegOnnx.OverlayResult onnxResult = default;
+            Bitmap engineOverlay = null;
 
             using (var srcCopy = (Bitmap)_sourceImage.Clone())
             {
@@ -3809,28 +3822,67 @@ namespace SmartLabelingApp
                 {
                     if (token.IsCancellationRequested) return;
 
-                    var res = YoloSegOnnx.Infer(_onnxSession, srcCopy);
+                    if (_onnxSession != null)
+                    {
+                        // ---------------- ONNX 경로 ----------------
+                        var res = YoloSegOnnx.Infer(_onnxSession, srcCopy);
 
-                    var swOverlay = System.Diagnostics.Stopwatch.StartNew();
-                    result = YoloSegOnnx.Render(srcCopy, res);
-                    swOverlay.Stop();
+                        var swOverlay = System.Diagnostics.Stopwatch.StartNew();
+                        onnxResult = YoloSegOnnx.Render(srcCopy, res); // 기존 그대로
+                        swOverlay.Stop();
 
-                    AddLog($"Inference 완료: {res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms, overlay={swOverlay.Elapsed.TotalMilliseconds:F0}ms");
-                    AddLog($"총합 ≈ {(res.PreMs + res.InferMs + res.PostMs + swOverlay.Elapsed.TotalMilliseconds):F0}ms");
+                        Log($"[ONNX] Inference 완료: {res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms, overlay={swOverlay.Elapsed.TotalMilliseconds:F0}ms");
+                        Log($"[ONNX] 총합 ≈ {(res.PreMs + res.InferMs + res.PostMs + swOverlay.Elapsed.TotalMilliseconds):F0}ms");
+                    }
+                    else if (_engineSession != null)
+                    {
+                        // ---------------- TensorRT 경로 ----------------
+                        var swAll = System.Diagnostics.Stopwatch.StartNew();
 
-                    // result = YoloSegOnnx.RenderInputPreview(srcCopy, _onnxSession /* or forceNet: 640 */);
+                        // 1) 추론
+                        var seg = _engineSession.Infer(srcCopy);
+                    
+                        var inferMs = seg.InferMs;
 
-                }, token);
+                        // 2) 오버레이 (빠른 경로)
+                        var swOverlay = System.Diagnostics.Stopwatch.StartNew();
+                        engineOverlay = _engineSession.OverlayFast(srcCopy, seg);
+                        swOverlay.Stop();
+
+                        swAll.Stop();
+                        Log($"[TRT] Inference 완료: {seg.Dets.Count}개, pre={seg.PreMs:F0}ms, infer={inferMs:F0}ms, post={seg.PostMs:F0}ms, overlay={swOverlay.Elapsed.TotalMilliseconds:F0}ms");
+                        Log($"[TRT] 총합 ≈ {(seg.PreMs + inferMs + seg.PostMs + swOverlay.Elapsed.TotalMilliseconds):F0}ms");
+                    }
+                }, token).ConfigureAwait(true);
             }
 
-            if (token.IsCancellationRequested || result.Image == null)
+            if (token.IsCancellationRequested)
                 return false;
 
-            _canvas.SetImageAndOverlays(result.Image, result.Overlays);
-            
-            // _canvas.SetImage(result.Image);
-            return true;
+            // 결과 적용
+            if (_onnxSession != null)
+            {
+                if (onnxResult.Image == null)
+                    return false;
+
+                _canvas.SetImageAndOverlays(onnxResult.Image, onnxResult.Overlays);
+                return true;
+            }
+            else if (_engineSession != null)
+            {
+                if (engineOverlay == null)
+                    return false;
+
+                // TensorRT 경로는 오버레이를 비트맵에 직접 그렸으므로 이미지만 세팅
+                // (혹시 Overlay 객체 컬렉션을 쓰고 있다면 null 또는 빈 컬렉션 전달)
+                _canvas.SetImage(engineOverlay);
+                // _canvas.SetImageAndOverlays(engineOverlay, null);
+                return true;
+            }
+
+            return false;
         }
+
 
 
 
