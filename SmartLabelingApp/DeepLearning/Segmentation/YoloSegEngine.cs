@@ -43,47 +43,12 @@ namespace SmartLabelingApp
 
         #endregion
 
-        #region
-
-        public sealed class SegResult
-        {
-            public int NetSize { get; set; }
-            public float Scale { get; set; }
-            public int PadX { get; set; }
-            public int PadY { get; set; }
-            public Size Resized { get; set; }
-            public Size OrigSize { get; set; }
-
-            public int SegDim { get; set; }
-            public int MaskH { get; set; }
-            public int MaskW { get; set; }
-            public float[] ProtoFlat { get; set; }
-
-            public List<Det> Dets { get; set; }
-
-            public double PreMs { get; set; }
-            public double InferMs { get; set; }
-            public double PostMs { get; set; }
-            public double TotalMs { get; set; }
-        }
-
-        public sealed class Det
-        {
-            public RectangleF Box;   // net 좌표 (ltrb)
-            public float Score;
-            public int ClassId;
-            public float[] Coeff;    // 길이 = SegDim
-        }
-
-        #endregion
-
         private ProtoLayout _protoLayout = ProtoLayout.Unknown;
 
         private IntPtr _h = IntPtr.Zero;
         private readonly int _deviceId;
         private int _cachedInputNet = -1;        // 엔진 고정 입력(정사각) 추론용 힌트
         private float[] _inBuf = null;           // [1,3,net,net]
-        [ThreadStatic] private static float[] _maskBufTLS;
 
         public YoloSegEngine(string enginePath, int deviceId = 0)
         {
@@ -108,7 +73,7 @@ namespace SmartLabelingApp
         /// <summary>
         /// Bitmap 한 장을 넣어 SegResult(박스/점수/클래스/coeff & proto) 반환
         /// </summary>
-        public SegResult Infer(Bitmap orig, float conf = 0.5f, float iou = 0.45f)
+        public SegResult Infer(Bitmap orig, float conf = 0.9f, float iou = 0.45f)
         {
             if (_h == IntPtr.Zero) throw new ObjectDisposedException(nameof(YoloSegEngine));
             var sw = Stopwatch.StartNew();
@@ -275,79 +240,6 @@ namespace SmartLabelingApp
         }
 
 
-        public Bitmap OverlayFast(Bitmap orig, SegResult r, float maskThr = 0.65f, float alpha = 0.45f, bool drawBoxes = false)
-        {
-            if (orig == null) throw new ArgumentNullException(nameof(orig));
-            if (r == null || r.Dets == null || r.Dets.Count == 0)
-            {
-                Trace.WriteLine("[TRT] OverlayFast() early return: no dets");
-                return (Bitmap)orig.Clone(); // 원본 반환 시 Dispose 문제 방지
-            }
-
-            Trace.WriteLine($"[TRT] OverlayFast() start | img={orig.Width}x{orig.Height}, net={r.NetSize}, proto: K={r.SegDim}, mask={r.MaskW}x{r.MaskH}, dets={r.Dets.Count}, thr={maskThr}, alpha={alpha}");
-
-            var over = (Bitmap)orig.Clone();
-            var rectAll = new Rectangle(0, 0, over.Width, over.Height);
-            var data = over.LockBits(rectAll, ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
-
-            try
-            {
-                int maskLen = r.MaskW * r.MaskH;
-                if (_maskBufTLS == null || _maskBufTLS.Length < maskLen)
-                    _maskBufTLS = new float[maskLen];
-
-                int di = 0;
-                foreach (var d in r.Dets)
-                {
-                    // 1) (표준) KHW로 마스크 합성 → _maskBufTLS에 채움
-                    MaskSynth.ComputeMask_KHW_NoAlloc(d.Coeff, r.ProtoFlat, r.SegDim, r.MaskW, r.MaskH, _maskBufTLS);
-
-                    // 2) netBox → origBox 변환
-                    var origBox = Postprocess.NetBoxToOriginal(d.Box, r.Scale, r.PadX, r.PadY, r.Resized, r.OrigSize);
-                    if (origBox == Rectangle.Empty)
-                    {
-                        Trace.WriteLine($"[TRT] overlay det[{di}] skipped (empty box)");
-                        di++;
-                        continue;
-                    }
-
-                    if (di < 4)
-                    {
-                        // 간단한 디버그(평균값) — 마스크가 0으로만 채워지는지 확인 용
-                        double mean = 0;
-                        for (int i = 0; i < maskLen; i++) mean += _maskBufTLS[i];
-                        mean /= maskLen;
-                        Trace.WriteLine($"[TRT] det[{di}] maskMean={mean:F4}, score={d.Score:F3}, cls={d.ClassId}");
-                    }
-
-                    // 3) ROI에 마스크 블렌딩
-                    BlendMaskIntoOrigROI(
-                        data, over.Width, over.Height,
-                        origBox, _maskBufTLS, r.MaskW, r.MaskH, r.NetSize,
-                        r.Scale, r.PadX, r.PadY,
-                        maskThr, alpha, ClassColor(d.ClassId));
-
-                    // 4) (옵션) 박스 표시
-                    if (drawBoxes)
-                    {
-                        using (var g = Graphics.FromImage(over))
-                        using (var p = new Pen(ClassColor(d.ClassId), 2f))
-                            g.DrawRectangle(p, origBox);
-                    }
-
-                    di++;
-                }
-            }
-            finally
-            {
-                over.UnlockBits(data);
-            }
-
-            Trace.WriteLine("[TRT] OverlayFast() end");
-            return over;
-        }
-
-
         #endregion
 
         #region Preprocess / Math helpers
@@ -358,100 +250,6 @@ namespace SmartLabelingApp
             if (_inBuf == null || _inBuf.Length != need) _inBuf = new float[need];
         }
 
-        #endregion
-
-        #region Mask & Overlay (빠른 경로)
-
-        private static void BlendMaskIntoOrigROI(BitmapData data, int imgW, int imgH, Rectangle boxOrig, float[] mask, int mw, int mh, int netSize, float scale, int padX, int padY, float thr, float alpha, Color color)
-        {
-            // net(640) 좌표→mask 좌표 스케일
-            float sx = (float)mw / netSize;
-            float sy = (float)mh / netSize;
-
-            int x0 = Math.Max(0, boxOrig.Left);
-            int y0 = Math.Max(0, boxOrig.Top);
-            int x1 = Math.Min(imgW, boxOrig.Right);
-            int y1 = Math.Min(imgH, boxOrig.Bottom);
-            if (x0 >= x1 || y0 >= y1) return;
-
-            byte rr = color.R, gg = color.G, bb = color.B;
-            float a = Math.Max(0f, Math.Min(1f, alpha));
-            float ia = 1f - a;
-            float thrF = Math.Max(0f, Math.Min(1f, thr));
-
-            unsafe
-            {
-                byte* basePtr = (byte*)data.Scan0;
-                int stride = data.Stride;
-
-                int roiW = x1 - x0, roiH = y1 - y0;
-
-                // x, y 각각에 대해 bilinear weights + 인덱스 미리 계산 (center alignment)
-                var u0a = new int[roiW]; var fu0a = new float[roiW]; var fu1a = new float[roiW];
-                for (int i = 0; i < roiW; i++)
-                {
-                    // orig -> net : (x + 0.5)*scale + padX - 0.5  (center-aligned)
-                    float nx = ((x0 + i + 0.5f) * scale + padX) - 0.5f;
-                    float u = nx * sx;
-                    float uClamped = Math.Max(0, Math.Min(u, mw - 1.001f));
-                    int u0 = (int)uClamped;
-                    float fu = uClamped - u0;
-                    u0a[i] = u0; fu0a[i] = 1 - fu; fu1a[i] = fu;
-                }
-
-                var v0a = new int[roiH]; var fv0a = new float[roiH]; var fv1a = new float[roiH];
-                for (int j = 0; j < roiH; j++)
-                {
-                    float ny = ((y0 + j + 0.5f) * scale + padY) - 0.5f;
-                    float v = ny * sy;
-                    float vClamped = Math.Max(0, Math.Min(v, mh - 1.001f));
-                    int v0 = (int)vClamped;
-                    float fv = vClamped - v0;
-                    v0a[j] = v0; fv0a[j] = 1 - fv; fv1a[j] = fv;
-                }
-
-                for (int j = 0; j < roiH; j++)
-                {
-                    int y = y0 + j;
-                    int v0 = v0a[j]; int v1 = Math.Min(v0 + 1, mh - 1);
-                    float wv0 = fv0a[j], wv1 = fv1a[j];
-
-                    byte* row = basePtr + y * stride + (x0 * 4);
-                    int base00 = v0 * mw;
-                    int base01 = v1 * mw;
-
-                    for (int i = 0; i < roiW; i++)
-                    {
-                        int u0 = u0a[i]; int u1 = Math.Min(u0 + 1, mw - 1);
-                        float wu0 = fu0a[i], wu1 = fu1a[i];
-
-                        float m00 = mask[base00 + u0];
-                        float m10 = mask[base00 + u1];
-                        float m01 = mask[base01 + u0];
-                        float m11 = mask[base01 + u1];
-
-                        float mx0 = m00 * wu0 + m10 * wu1;
-                        float mx1 = m01 * wu0 + m11 * wu1;
-                        float m = mx0 * wv0 + mx1 * wv1;
-
-                        if (m < thrF) { row += 4; continue; }
-
-                        row[0] = (byte)(row[0] * ia + bb * a);
-                        row[1] = (byte)(row[1] * ia + gg * a);
-                        row[2] = (byte)(row[2] * ia + rr * a);
-                        row[3] = 255;
-                        row += 4;
-                    }
-                }
-            }
-        }
-
-        private static Color ClassColor(int id)
-        {
-            // 간단한 고정 팔레트
-            Color[] tbl = { Color.Lime, Color.DeepSkyBlue, Color.Orange, Color.HotPink, Color.Gold, Color.MediumOrchid };
-            return tbl[id % tbl.Length];
-        }
         #endregion
     }
 }

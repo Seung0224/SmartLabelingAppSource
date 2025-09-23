@@ -3801,6 +3801,8 @@ namespace SmartLabelingApp
         // 공용: 원본(_sourceImage)로 추론 + 오버레이 생성 + 화면 적용까지 한 번에 수행
         private async Task<bool> RunInferenceAndApplyAsync(CancellationToken token = default)
         {
+            var overlays = new List<SmartLabelingApp.ImageCanvas.OverlayItem>();
+
             // 공통 로그 편의를 위해
             void Log(string msg) => AddLog(msg);
 
@@ -3812,8 +3814,8 @@ namespace SmartLabelingApp
                 return false;
             }
 
-            // 원본은 UI 스레드에서 사용 중일 수 있으니, Task 내부에서만 복제한 사본 사용
-            YoloSegOnnx.OverlayResult onnxResult = default;
+            // 결과 비트맵 (두 경로 모두 공통 렌더러가 돌려주는 Bitmap)
+            Bitmap onnxOverlay = null;
             Bitmap engineOverlay = null;
 
             using (var srcCopy = (Bitmap)_sourceImage.Clone())
@@ -3825,10 +3827,11 @@ namespace SmartLabelingApp
                     if (_onnxSession != null)
                     {
                         // ---------------- ONNX 경로 ----------------
-                        var res = YoloSegOnnx.Infer(_onnxSession, srcCopy);
+                        var res = YoloSegOnnx.Infer(_onnxSession, srcCopy); // SegResult (Contracts)
 
                         var swOverlay = System.Diagnostics.Stopwatch.StartNew();
-                        onnxResult = YoloSegOnnx.Render(srcCopy, res); // 기존 그대로
+                        // 공통 오버레이: ONNX 스타일의 그림을 두 백엔드 공통으로
+                        onnxOverlay = OverlayRendererFast.RenderEx(srcCopy, res, overlaysOut: overlays);
                         swOverlay.Stop();
 
                         Log($"[ONNX] Inference 완료: {res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms, overlay={swOverlay.Elapsed.TotalMilliseconds:F0}ms");
@@ -3839,14 +3842,13 @@ namespace SmartLabelingApp
                         // ---------------- TensorRT 경로 ----------------
                         var swAll = System.Diagnostics.Stopwatch.StartNew();
 
-                        // 1) 추론
+                        // 1) 추론 (SegResult 반환, ProtoFlat=KHW 보장)
                         var seg = _engineSession.Infer(srcCopy);
-                    
                         var inferMs = seg.InferMs;
 
-                        // 2) 오버레이 (빠른 경로)
+                        // 2) 공통 오버레이 (이전 _engineSession.OverlayFast 제거)
                         var swOverlay = System.Diagnostics.Stopwatch.StartNew();
-                        engineOverlay = _engineSession.OverlayFast(srcCopy, seg);
+                        engineOverlay = OverlayRendererFast.RenderEx(srcCopy, seg, overlaysOut: overlays);
                         swOverlay.Stop();
 
                         swAll.Stop();
@@ -3859,24 +3861,17 @@ namespace SmartLabelingApp
             if (token.IsCancellationRequested)
                 return false;
 
-            // 결과 적용
+            // 결과 적용 (두 경로 모두 비트맵만 세팅)
             if (_onnxSession != null)
             {
-                if (onnxResult.Image == null)
-                    return false;
-
-                _canvas.SetImageAndOverlays(onnxResult.Image, onnxResult.Overlays);
+                if (onnxOverlay == null) return false;
+                _canvas.SetImageAndOverlays(onnxOverlay, overlays);
                 return true;
             }
             else if (_engineSession != null)
             {
-                if (engineOverlay == null)
-                    return false;
-
-                // TensorRT 경로는 오버레이를 비트맵에 직접 그렸으므로 이미지만 세팅
-                // (혹시 Overlay 객체 컬렉션을 쓰고 있다면 null 또는 빈 컬렉션 전달)
-                _canvas.SetImage(engineOverlay);
-                // _canvas.SetImageAndOverlays(engineOverlay, null);
+                if (engineOverlay == null) return false;
+                _canvas.SetImageAndOverlays(engineOverlay, overlays);
                 return true;
             }
 

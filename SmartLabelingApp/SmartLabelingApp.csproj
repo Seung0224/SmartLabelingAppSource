@@ -52,11 +52,15 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="DeepLearning\Segmentation\Contracts\Det.cs" />
+    <Compile Include="DeepLearning\Segmentation\Contracts\SegResult.cs" />
     <Compile Include="DeepLearning\Segmentation\Core\MaskSynth.cs" />
     <Compile Include="DeepLearning\Segmentation\Core\MathUtils.cs" />
     <Compile Include="DeepLearning\Segmentation\Core\Postprocess.cs" />
     <Compile Include="DeepLearning\Segmentation\Core\Preprocess.cs" />
     <Compile Include="DeepLearning\Segmentation\Core\ProtoUtils.cs" />
+    <Compile Include="DeepLearning\Segmentation\Overlay\ColorUtils.cs" />
+    <Compile Include="DeepLearning\Segmentation\Overlay\OverlayRendererFast.cs" />
     <Compile Include="Labeling\AI\AIInterfcae.cs" />
     <Compile Include="Labeling\AI\AISegmenterOpenCV.cs" />
     <Compile Include="Labeling\AI\AITool.cs" />
