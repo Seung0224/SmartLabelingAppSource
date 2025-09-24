@@ -1,11 +1,11 @@
 ﻿// SegmentationInfer.cs
 // - ONNX + TensorRT 두 경로를 '한 파일'에 통합
 // - 드롭인 교체용: 기존 YoloSegOnnx.Infer(...) / YoloSegEngine.Infer(...) 한 줄을 아래 API로 대체
-//   * ONNX  : SegmentationInfer.InferOnnx(session, bitmap, ...)
-//   * TensorRT(IntPtr) : SegmentationInfer.InferTrt(trtHandle, bitmap, ...)
-// - 내부에서 공통 후처리(박스 파싱, NMS, Proto KHW 보장)까지 수행하여 SegResult 반환
+//   * ONNX                : SegmentationInfer.InferOnnx(session, bitmap, ...)
+//   * TensorRT(IntPtr)    : SegmentationInfer.InferTrt(trtHandle, bitmap, ...)
+//   * TensorRT(YoloSegEngine) : SegmentationInfer.Infer(engineInstance, bitmap, ...)   <-- 새로 추가
 //
-// 의존(기존 프로젝트에 이미 존재해야 함):
+// 의존:
 //   - Preprocess.cs  : EnsureOnnxInput, EnsureNchwBuffer, FillTensorFromBitmap, DefaultNet
 //   - Postprocess.cs : Nms(...)
 //   - ProtoUtils.cs  : DetectByVariance(...), TransposeHWKtoKHW(...), enum ProtoLayout
@@ -28,8 +28,10 @@ namespace SmartLabelingApp
     public static class SegmentationInfer
     {
         // ===========================================================
-        // ONNX 경로 (세션별 캐시 포함)
+        // ONNX 경로 (세션별 캐시)
         // ===========================================================
+
+
 
         private sealed class OnnxCache
         {
@@ -43,10 +45,6 @@ namespace SmartLabelingApp
         private static readonly ConditionalWeakTable<InferenceSession, OnnxCache> _onnxCaches =
             new ConditionalWeakTable<InferenceSession, OnnxCache>();
 
-        /// <summary>
-        /// 기존: YoloSegOnnx.Infer(session, bitmap, ...)
-        /// 교체: SegmentationInfer.InferOnnx(session, bitmap, ...)
-        /// </summary>
         public static SegResult InferOnnx(
             InferenceSession session, Bitmap orig,
             float conf = 0.9f, float iou = 0.45f,
@@ -65,7 +63,6 @@ namespace SmartLabelingApp
 
             var cache = _onnxCaches.GetValue(session, _ => new OnnxCache());
 
-            // 전처리
             Preprocess.EnsureOnnxInput(session, net,
                 ref cache.InputName, ref cache.CurNet, ref cache.InBuf, ref cache.Tensor, ref cache.Nov);
 
@@ -75,7 +72,6 @@ namespace SmartLabelingApp
             tPre = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
             Trace.WriteLine($"[ONNX] Preprocess done | resized={resized.Width}x{resized.Height}, pad=({padX},{padY}), scale={scale:F6}, preMs={tPre:F1}");
 
-            // 추론
             IDisposableReadOnlyCollection<DisposableNamedOnnxValue> outs = null;
             try
             {
@@ -88,13 +84,11 @@ namespace SmartLabelingApp
                 var d3 = det3.Dimensions; var d4 = proto4.Dimensions;
                 Trace.WriteLine($"[ONNX] Run ok | det=({d3[0]},{d3[1]},{d3[2]}), proto=({d4[0]},{d4[1]},{d4[2]},{d4[3]}), inferMs={tInfer:F1}");
 
-                // 공통 후처리
                 var res = BuildFromOnnx(det3, proto4, net, scale, padX, padY, resized, orig.Size, conf, iou);
 
-                // 선택 정책(필요 시)
+                // 필요 시 공통 정책 적용 훅
                 // ApplyOptionalPolicies(ref res, minBoxAreaRatio, minMaskAreaRatio, discardTouchingBorder);
 
-                // 시간 기입
                 res.PreMs = tPre;
                 res.InferMs = tInfer;
                 res.TotalMs = sw.Elapsed.TotalMilliseconds;
@@ -106,13 +100,12 @@ namespace SmartLabelingApp
         }
 
         // ===========================================================
-        // TensorRT 경로 (P/Invoke + 핸들별 캐시 포함)
+        // TensorRT 경로 (IntPtr 핸들)
         // ===========================================================
 
-        // 네이티브 DLL 함수 (이름/시그니처는 기존과 동일)
         private const string TrtDll = "TensorRTRunner"; // tensorrt_runner.dll
         [DllImport(TrtDll, CallingConvention = CallingConvention.Cdecl)]
-        private static extern int trt_get_input_size(IntPtr handle); // 정사각 고정이면 size, 동적이면 -1
+        private static extern int trt_get_input_size(IntPtr handle);
 
         [DllImport(TrtDll, CallingConvention = CallingConvention.Cdecl)]
         private static extern int trt_infer(
@@ -124,7 +117,6 @@ namespace SmartLabelingApp
         [DllImport(TrtDll, CallingConvention = CallingConvention.Cdecl)]
         private static extern void trt_free(IntPtr p);
 
-        // 핸들별 캐시 (전처리 버퍼, 레이아웃 캐시 등)
         private sealed class TrtCache
         {
             public int CachedInputNet = -1;
@@ -133,25 +125,18 @@ namespace SmartLabelingApp
         }
 
         private static readonly Dictionary<long, TrtCache> _trtCaches = new Dictionary<long, TrtCache>();
-
         private static TrtCache GetTrtCache(IntPtr h)
         {
             long k = h.ToInt64();
             if (!_trtCaches.TryGetValue(k, out var c))
             {
                 c = new TrtCache();
-                // 엔진 고정 입력 사이즈 캐싱
                 try { c.CachedInputNet = trt_get_input_size(h); } catch { c.CachedInputNet = -1; }
                 _trtCaches[k] = c;
             }
             return c;
         }
 
-        /// <summary>
-        /// 기존: yoloSegEngine.Infer(bitmap, ...)
-        /// 교체: SegmentationInfer.InferTrt(trtHandle, bitmap, ...)
-        ///  - trtHandle: 기존 엔진 생성 코드에서 받은 네이티브 핸들(IntPtr)
-        /// </summary>
         public static SegResult InferTrt(
             IntPtr trtHandle, Bitmap orig,
             float conf = 0.9f, float iou = 0.45f,
@@ -170,7 +155,6 @@ namespace SmartLabelingApp
             int net = cache.CachedInputNet > 0 ? cache.CachedInputNet : Preprocess.DefaultNet;
             Trace.WriteLine($"[TRT] Infer() start | net={net}, img={orig.Width}x{orig.Height}");
 
-            // 전처리
             Preprocess.EnsureNchwBuffer(net, ref cache.InBuf);
             Preprocess.FillTensorFromBitmap(orig, net, cache.InBuf,
                 out float scale, out int padX, out int padY, out Size resized);
@@ -178,7 +162,6 @@ namespace SmartLabelingApp
             tPre = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
             Trace.WriteLine($"[TRT] Preprocess done | resized={resized.Width}x{resized.Height}, pad=({padX},{padY}), scale={scale:F6}, preMs={tPre:F1}");
 
-            // 네이티브 추론
             IntPtr detPtr = IntPtr.Zero, protoPtr = IntPtr.Zero;
             int nDet = 0, detC = 0, segDim = 0, mh = 0, mw = 0;
             Trace.WriteLine("[TRT] Calling trt_infer...");
@@ -189,8 +172,7 @@ namespace SmartLabelingApp
             tInfer = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
             Trace.WriteLine($"[TRT] trt_infer ok | det shape=({nDet},{detC}), proto=({segDim},{mh},{mw}), inferMs={tInfer:F1}");
 
-            // 결과 복사
-            float[] proto = new float[segDim * mw * mh]; // 주의: 길이는 segDim*mw*mh
+            float[] proto = new float[segDim * mw * mh];
             Marshal.Copy(protoPtr, proto, 0, proto.Length);
             trt_free(protoPtr);
 
@@ -202,15 +184,13 @@ namespace SmartLabelingApp
             }
             trt_free(detPtr);
 
-            // 공통 후처리 (TRT 전용 규칙: 헤더 전치/좌표스케일/Proto 레이아웃 감지&전치)
             var res = BuildFromTrt(detFlat, nDet, detC, proto, segDim, mh, mw,
                                    net, scale, padX, padY, resized, orig.Size,
                                    ref cache.Layout, conf, iou);
 
-            // 선택 정책(필요 시)
+            // 필요 시 공통 정책
             // ApplyOptionalPolicies(ref res, minBoxAreaRatio, minMaskAreaRatio, discardTouchingBorder);
 
-            // 시간 기입
             res.PreMs = tPre;
             res.InferMs = tInfer;
             res.TotalMs = sw.Elapsed.TotalMilliseconds;
@@ -220,10 +200,35 @@ namespace SmartLabelingApp
         }
 
         // ===========================================================
-        // 공통 후처리 (ONNX / TRT 내부에서 사용)
+        // ★ 새로 추가: TensorRT 경로 (엔진 인스턴스 오버로드)
+        // ===========================================================
+        //
+        // 기존 호출:
+        //   var res = _engineSession.Infer(srcCopy);
+        //
+        // 교체 한 줄:
+        //   var res = SegmentationInfer.Infer(_engineSession, srcCopy);
+        //
+        // 내부에서 YoloSegEngine의 공개 API를 그대로 호출하므로,
+        // 핸들/버퍼/레이아웃 관리는 엔진이 책임지고 "원래 잘 되던" 결과와 1:1 동일합니다.
+        //
+        public static SegResult Infer(
+            YoloSegEngine engine, Bitmap orig,
+            float conf = 0.9f, float iou = 0.45f,
+            float minBoxAreaRatio = 0.003f,
+            float minMaskAreaRatio = 0.003f,
+            bool discardTouchingBorder = true)
+        {
+            if (engine is null) throw new ArgumentNullException(nameof(engine));
+            if (orig is null) throw new ArgumentNullException(nameof(orig));
+            // 원본 엔진의 로직을 그대로 사용 (정확히 동일한 오버레이/결과 유지)
+            return engine.Infer(orig, conf, iou);
+        }
+
+        // ===========================================================
+        // 공통 후처리
         // ===========================================================
 
-        // ONNX: det3=[1,*,*], proto4=[1,K,H,W] → 이미 KHW 순서 보장
         private static SegResult BuildFromOnnx(
             Tensor<float> det3, Tensor<float> proto4,
             int net, float scale, int padX, int padY, Size resized, Size origSize,
@@ -245,7 +250,6 @@ namespace SmartLabelingApp
             if (numClasses <= 0)
                 throw new InvalidOperationException($"Invalid head layout. feat={channels}, segDim={segDim}");
 
-            // 좌표 스케일 힌트
             float coordScale = 1f, maxWH = 0f;
             int sample = Math.Min(nPred, 128);
             for (int i = 0; i < sample; i++)
@@ -256,7 +260,6 @@ namespace SmartLabelingApp
             }
             if (maxWH <= 3.5f) coordScale = net;
 
-            // det 파싱
             var dets = new List<Det>(Math.Min(nPred, 256));
             for (int i = 0; i < nPred; i++)
             {
@@ -308,14 +311,12 @@ namespace SmartLabelingApp
             };
         }
 
-        // TRT: detFlat/ proto/ segDim/ mh/ mw → KHW 보장 + 레이아웃 캐시
         private static SegResult BuildFromTrt(
             float[] detFlat, int nDet, int detC,
             float[] proto, int segDim, int mh, int mw,
             int net, float scale, int padX, int padY, Size resized, Size origSize,
             ref ProtoLayout layout, float conf, float iou)
         {
-            // DET 헤더 전치(C,M→M,C) 필요 시
             if (detC > 512 && nDet <= 512)
             {
                 int M = detC, C = nDet;
@@ -333,7 +334,6 @@ namespace SmartLabelingApp
             if (numClasses <= 0)
                 throw new InvalidOperationException($"Invalid head layout: channels={channels}, segDim={segDim}");
 
-            // 좌표 스케일 힌트
             float coordScale = 1f, maxWH = 0f;
             int sample = Math.Min(nPred, 128);
             for (int i = 0; i < sample; i++)
@@ -344,7 +344,6 @@ namespace SmartLabelingApp
             }
             if (maxWH <= 3.5f) coordScale = net;
 
-            // det 파싱
             var dets = new List<Det>(Math.Min(nPred, 256));
             for (int i = 0; i < nPred; i++)
             {
@@ -377,17 +376,14 @@ namespace SmartLabelingApp
             if (dets.Count > 0)
                 dets = Postprocess.Nms(dets, d => d.Box, d => d.Score, iou);
 
-            // Proto 레이아웃 감지/전치 (※ 네 프로젝트의 "원본 동작"에 맞춘 인자 순서)
             if (layout == ProtoLayout.Unknown && dets.Count > 0)
             {
-                // 원본 엔진 코드가 DetectByVariance(segDim, mw, mh) 순서로 사용
                 layout = ProtoUtils.DetectByVariance(dets[0].Coeff, proto, segDim, mw, mh);
                 Trace.WriteLine($"[TRT] Proto layout detected = {layout}");
             }
             if (layout == ProtoLayout.HWK)
             {
                 var khw = new float[segDim * mw * mh];
-                // 원본 엔진 코드가 TransposeHWKtoKHW(segDim, mw, mh) 순서로 사용
                 ProtoUtils.TransposeHWKtoKHW(proto, segDim, mw, mh, khw);
                 proto = khw;
                 Trace.WriteLine("[TRT] Proto HWK → KHW transposed");
@@ -405,16 +401,14 @@ namespace SmartLabelingApp
                 SegDim = segDim,
                 MaskH = mh,
                 MaskW = mw,
-                ProtoFlat = proto  // 여기서부터 KHW 보장
+                ProtoFlat = proto
             };
         }
 
-        // (선택) 공통 정책 적용 훅
         private static void ApplyOptionalPolicies(ref SegResult res,
             float minBoxAreaRatio, float minMaskAreaRatio, bool discardTouchingBorder)
         {
-            // 원하면 여기에 너가 쓰던 정책을 이식해서 공통으로 적용할 수 있어.
-            // 예: 박스 면적 필터/ 경계 접촉 필터/ 마스크 면적 필터 등
+            // 필요 시 공통 정책을 여기에 추가
         }
     }
 }

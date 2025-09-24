@@ -3844,7 +3844,7 @@ namespace SmartLabelingApp
                         var swAll = System.Diagnostics.Stopwatch.StartNew();
 
                         // 1) 추론 (SegResult 반환, ProtoFlat=KHW 보장)
-                        var res = _engineSession.Infer(srcCopy);
+                        var res = SegmentationInfer.Infer(_engineSession, srcCopy);
                         var inferMs = res.InferMs;
 
                         // 2) 공통 오버레이 (이전 _engineSession.OverlayFast 제거)
