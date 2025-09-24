@@ -693,10 +693,6 @@ namespace SmartLabelingApp
                 {
                     EnterAiRoiMode();
                 }
-                else if (e.Button == MouseButtons.Middle)
-                {
-                    MessageBox.Show("Hello World", "AI Tool", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
             };
 
             _tt.SetToolTip(_btnPointer, "포인터: 선택/이동/편집 모드로 전환합니다.");

@@ -1153,17 +1153,28 @@ namespace SmartLabelingApp
             }
 
 
-            if (e.Shift && (e.KeyCode == Keys.Up || e.KeyCode == Keys.Down))
+            if (e.Shift && (e.KeyCode == Keys.Left || e.KeyCode == Keys.Right ||
+                e.KeyCode == Keys.Up || e.KeyCode == Keys.Down))
             {
                 if (Selection != null && Selection.HasAny)
                 {
-                    const float SCALE_STEP = 1.05f;
-                    float factor = (e.KeyCode == Keys.Up) ? SCALE_STEP : 1f / SCALE_STEP;
-                    ScaleSelectionUniform(factor);
+                    const float STEP = 1.05f;   // 5%씩
+                    float fx = 1f, fy = 1f;
+
+                    switch (e.KeyCode)
+                    {
+                        case Keys.Left: fx = 1f / STEP; fy = 1f; break; // X만 축소
+                        case Keys.Right: fx = STEP; fy = 1f; break; // X만 확대
+                        case Keys.Up: fx = 1f; fy = STEP; break; // Y만 확대
+                        case Keys.Down: fx = 1f; fy = 1f / STEP; break; // Y만 축소
+                    }
+
+                    ScaleSelectionNonUniform(fx, fy);
                     Invalidate();
-                    e.Handled = e.SuppressKeyPress = true; return;
+                    e.Handled = e.SuppressKeyPress = true;
+                    return;
                 }
-                // 선택이 없을 때는 폼에서 처리하도록 넘김
+                // 선택이 없으면 폼에 넘김
             }
 
             if (!e.Shift && (e.KeyCode == Keys.Left || e.KeyCode == Keys.Right || e.KeyCode == Keys.Up || e.KeyCode == Keys.Down))
@@ -1347,6 +1358,134 @@ namespace SmartLabelingApp
                 r = r.IsEmpty ? b : RectangleF.Union(r, b);
             }
             return r;
+        }
+        private void ScaleSelectionNonUniform(float fx, float fy)
+        {
+            var targets = new List<IShape>();
+            if (Selection.Multi.Count > 0) targets.AddRange(Selection.Multi);
+            else if (Selection.Selected != null) targets.Add(Selection.Selected);
+            if (targets.Count == 0) return;
+
+            // 선택 범위(g0) 계산
+            RectangleF g0 = RectangleF.Empty;
+            for (int i = 0; i < targets.Count; i++)
+            {
+                var b = targets[i].GetBoundsImg();
+                if (!b.IsEmpty) g0 = g0.IsEmpty ? b : RectangleF.Union(g0, b);
+            }
+            if (g0.IsEmpty) return;
+
+            // 최소 크기 보장
+            float minW = MinRectSizeImg, minH = MinRectSizeImg;
+            float newW = g0.Width * fx, newH = g0.Height * fy;
+            if (newW < minW && g0.Width > 0f) { fx = minW / g0.Width; newW = minW; }
+            if (newH < minH && g0.Height > 0f) { fy = minH / g0.Height; newH = minH; }
+
+            // 중심 유지
+            float cx = g0.X + g0.Width * .5f, cy = g0.Y + g0.Height * .5f;
+            var g1 = new RectangleF(cx - newW * .5f, cy - newH * .5f, newW, newH);
+
+            // 이미지 경계 안으로 평행이동 보정
+            var imgSz = Transform.ImageSize;
+            if (!imgSz.IsEmpty)
+            {
+                float dx = 0f, dy = 0f;
+                if (g1.Left < 0) dx = -g1.Left;
+                else if (g1.Right > imgSz.Width) dx = imgSz.Width - g1.Right;
+                if (g1.Top < 0) dy = -g1.Top;
+                else if (g1.Bottom > imgSz.Height) dy = imgSz.Height - g1.Bottom;
+                if (dx != 0f || dy != 0f) g1 = new RectangleF(g1.X + dx, g1.Y + dy, g1.Width, g1.Height);
+            }
+
+            // 각 도형에 적용
+            for (int i = 0; i < targets.Count; i++)
+            {
+                var s = targets[i];
+
+                if (s is RectangleShape rbox)
+                {
+                    var r0 = rbox.RectImg;
+                    rbox.RectImg = Normalize(new RectangleF(
+                        g1.X + (r0.X - g0.X) * fx,
+                        g1.Y + (r0.Y - g0.Y) * fy,
+                        r0.Width * fx,
+                        r0.Height * fy));
+                    continue;
+                }
+
+                if (s is CircleShape circle)
+                {
+                    var r0 = circle.RectImg;
+                    circle.RectImg = new RectangleF(
+                        g1.X + (r0.X - g0.X) * fx,
+                        g1.Y + (r0.Y - g0.Y) * fy,
+                        r0.Width * fx,
+                        r0.Height * fy);
+                    continue;
+                }
+
+                if (s is PolygonShape poly)
+                {
+                    for (int k = 0; k < poly.PointsImg.Count; k++)
+                    {
+                        var p0 = poly.PointsImg[k];
+                        poly.PointsImg[k] = new PointF(
+                            g1.X + (p0.X - g0.X) * fx,
+                            g1.Y + (p0.Y - g0.Y) * fy);
+                    }
+                    continue;
+                }
+
+                if (s is TriangleShape tri)
+                {
+                    for (int k = 0; k < tri.PointsImg.Count; k++)
+                    {
+                        var p0 = tri.PointsImg[k];
+                        tri.PointsImg[k] = new PointF(
+                            g1.X + (p0.X - g0.X) * fx,
+                            g1.Y + (p0.Y - g0.Y) * fy);
+                    }
+                    continue;
+                }
+
+                if (s is BrushStrokeShape brush)
+                {
+                    var path = brush.GetAreaPathImgClone();
+                    if (path != null)
+                    {
+                        using (path)
+                        using (var m = new Matrix())
+                        {
+                            // (x - g0) → Scale(fx,fy) → +g1 원점 이동
+                            m.Translate(-g0.X, -g0.Y, MatrixOrder.Append);
+                            m.Scale(fx, fy, MatrixOrder.Append);
+                            m.Translate(g1.X, g1.Y, MatrixOrder.Append);
+                            path.Transform(m);
+                            brush.ReplaceArea(path);
+                        }
+                    }
+                    if (brush.PointsImg != null && brush.PointsImg.Count > 0)
+                    {
+                        for (int k = 0; k < brush.PointsImg.Count; k++)
+                        {
+                            var p0 = brush.PointsImg[k];
+                            brush.PointsImg[k] = new PointF(
+                                g1.X + (p0.X - g0.X) * fx,
+                                g1.Y + (p0.Y - g0.Y) * fy);
+                        }
+                    }
+                    continue;
+                }
+
+                // 기타 도형: 바운딩 박스 기준 이동만
+                var b0 = s.GetBoundsImg();
+                if (!b0.IsEmpty)
+                {
+                    float tx = g1.X + (b0.X - g0.X) * fx - b0.X;
+                    float ty = g1.Y + (b0.Y - g0.Y) * fy - b0.Y;
+                    s.MoveBy(new SizeF(tx, ty));
+                }
+            }
         }
 
         private void ScaleSelectionUniform(float factor)
