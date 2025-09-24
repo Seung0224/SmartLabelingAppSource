@@ -59,6 +59,7 @@
     <Compile Include="DeepLearning\Segmentation\Core\Postprocess.cs" />
     <Compile Include="DeepLearning\Segmentation\Core\Preprocess.cs" />
     <Compile Include="DeepLearning\Segmentation\Core\ProtoUtils.cs" />
+    <Compile Include="DeepLearning\Segmentation\Core\SegmentationInfer.cs" />
     <Compile Include="DeepLearning\Segmentation\Overlay\ColorUtils.cs" />
     <Compile Include="DeepLearning\Segmentation\Overlay\OverlayRendererFast.cs" />
     <Compile Include="Labeling\AI\AIInterfcae.cs" />

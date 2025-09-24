@@ -3827,8 +3827,8 @@ namespace SmartLabelingApp
                     if (_onnxSession != null)
                     {
                         // ---------------- ONNX 경로 ----------------
-                        var res = YoloSegOnnx.Infer(_onnxSession, srcCopy); // SegResult (Contracts)
-
+                        var res = SegmentationInfer.InferOnnx(_onnxSession, srcCopy);
+                        
                         var swOverlay = System.Diagnostics.Stopwatch.StartNew();
                         // 공통 오버레이: ONNX 스타일의 그림을 두 백엔드 공통으로
                         onnxOverlay = OverlayRendererFast.RenderEx(srcCopy, res, overlaysOut: overlays);
