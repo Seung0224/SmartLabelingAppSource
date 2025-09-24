@@ -83,7 +83,7 @@ namespace SmartLabelingApp
             Trace.WriteLine($"[TRT] Infer() start | net={net}, img={orig.Width}x{orig.Height}");
 
             // ---- 1) 전처리
-            EnsureInputBuffer(net);
+            Preprocess.EnsureNchwBuffer(net, ref _inBuf);
             Preprocess.FillTensorFromBitmap(orig, net, _inBuf, out float scale, out int padX, out int padY, out Size resized);
             tPre = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
             Trace.WriteLine($"[TRT] Preprocess done | resized={resized.Width}x{resized.Height}, pad=({padX},{padY}), scale={scale:F6}, preMs={tPre:F1}");
@@ -239,16 +239,6 @@ namespace SmartLabelingApp
             return ret;
         }
 
-
-        #endregion
-
-        #region Preprocess / Math helpers
-
-        private void EnsureInputBuffer(int net)
-        {
-            int need = 1 * 3 * net * net;
-            if (_inBuf == null || _inBuf.Length != need) _inBuf = new float[need];
-        }
 
         #endregion
     }

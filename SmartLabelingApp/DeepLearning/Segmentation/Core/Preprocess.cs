@@ -1,6 +1,9 @@
 ﻿using System;
+using System.Linq;
 using System.Drawing;
 using System.Drawing.Imaging;
+using Microsoft.ML.OnnxRuntime;
+using Microsoft.ML.OnnxRuntime.Tensors;
 
 namespace SmartLabelingApp
 
@@ -85,6 +88,54 @@ namespace SmartLabelingApp
                 }
                 finally { tmp.UnlockBits(bd); }
             }
+        }
+
+
+        /// <summary>
+        /// Ensure NCHW float buffer of size [1,3,net,net].
+        /// Returns true if a new buffer was allocated.
+        /// </summary>
+        public static bool EnsureNchwBuffer(int net, ref float[] buf)
+        {
+            int need = 1 * 3 * net * net;
+            if (buf == null || buf.Length != need)
+            {
+                buf = new float[need];
+                return true;
+            }
+            return false;
+        }
+
+
+        /// <summary>
+        /// ONNX-specific input preparation moved from YoloSegOnnx.
+        /// Ensures ONNX input buffer/tensor/NamedOnnxValue are ready for the given net.
+        /// Returns true if internal objects were recreated.
+        /// </summary>
+        public static bool EnsureOnnxInput(
+        InferenceSession session,
+        int net,
+        ref string inputName,
+        ref int curNet,
+        ref float[] inBuf,
+        ref DenseTensor<float> tensor,
+        ref NamedOnnxValue nov)
+        {
+            if (tensor != null && curNet == net)
+                return false; // reuse existing
+
+            // Input name (first input)
+            inputName = session.InputMetadata.Keys.First();
+            
+            // Backing buffer + tensor view
+            inBuf = new float[1 * 3 * net * net];
+            tensor = new DenseTensor<float>(inBuf, new[] { 1, 3, net, net });
+
+            // Named input for Run()
+            nov = NamedOnnxValue.CreateFromTensor(inputName, tensor);
+
+            curNet = net;
+            return true;
         }
     }
 }

@@ -6,7 +6,7 @@ namespace SmartLabelingApp
     public sealed class SegResult
     {
         // 전처리 메타
-        public int NetSize { get; set; }
+        public int NetSize { get; set; } = 640;
         public float Scale { get; set; }
         public int PadX { get; set; }
         public int PadY { get; set; }

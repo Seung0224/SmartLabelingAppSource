@@ -5,19 +5,11 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
-using System.IO;
 using System.Linq;
 using System.Numerics;
 using System.Reflection;
-using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Windows.Forms;
-using TheArtOfDevHtmlRenderer.Adapters.Entities;
-using static Microsoft.WindowsAPICodePack.Shell.PropertySystem.SystemProperties.System;
-using static OpenCvSharp.Stitcher;
-using static SmartLabelingApp.ImageCanvas;
 
 namespace SmartLabelingApp
 {
@@ -250,9 +242,9 @@ namespace SmartLabelingApp
                 so = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL };
                 if (!TryAppendCudaWithOptions(so)) so.AppendExecutionProvider_CUDA(0);
                 var sess = new InferenceSession(modelPath, so);
-                EnsureInputBuffers(sess, 640);
+                Preprocess.EnsureOnnxInput(sess, 640, ref _inputName, ref _curNet, ref _inBuf, ref _tensor, ref _nov);
                 TryWarmup(sess, 640);
-                SmartLabelingApp.MainForm._currentRunTypeName = "CUDA EP";
+                SmartLabelingApp.MainForm._currentRunTypeName = "GPU";
                 return sess;
             }
             catch
@@ -264,7 +256,7 @@ namespace SmartLabelingApp
                 so = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL };
                 so.AppendExecutionProvider_DML();
                 var sess = new InferenceSession(modelPath, so);
-                EnsureInputBuffers(sess, 640);
+                Preprocess.EnsureOnnxInput(sess, 640, ref _inputName, ref _curNet, ref _inBuf, ref _tensor, ref _nov);
                 TryWarmup(sess, 640);
                 SmartLabelingApp.MainForm._currentRunTypeName = "DML EP";
                 return sess;
@@ -275,21 +267,11 @@ namespace SmartLabelingApp
             }
             var soCpu = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL };
             var cpu = new InferenceSession(modelPath, soCpu);
-            EnsureInputBuffers(cpu, 640);
+            Preprocess.EnsureOnnxInput(cpu, 640, ref _inputName, ref _curNet, ref _inBuf, ref _tensor, ref _nov);
             SmartLabelingApp.MainForm._currentRunTypeName = "CPU";
             return cpu;
         }
 
-        // 입력 한 변 크기(net)가 바뀌면 내부 버퍼를 다시 할당합니다.
-        private static void EnsureInputBuffers(InferenceSession s, int net)
-        {
-            if (_tensor != null && _curNet == net) return; // 동일 크기면 재사용
-            _inputName = s.InputMetadata.Keys.First();
-            _inBuf = new float[1 * 3 * net * net];
-            _tensor = new DenseTensor<float>(_inBuf, new[] { 1, 3, net, net });
-            _nov = NamedOnnxValue.CreateFromTensor(_inputName, _tensor);
-            _curNet = net;
-        }
         #endregion
 
         #region INFER
@@ -334,7 +316,7 @@ namespace SmartLabelingApp
 
             Trace.WriteLine($"[ONNX] Infer() start | net={netSize}, img={orig.Width}x{orig.Height}");
 
-            EnsureInputBuffers(session, netSize);
+            Preprocess.EnsureOnnxInput(session, netSize, ref _inputName, ref _curNet, ref _inBuf, ref _tensor, ref _nov);
             Preprocess.FillTensorFromBitmap(orig, netSize, _inBuf, out float scale, out int padX, out int padY, out Size resized);
             tPre = sw.Elapsed.TotalMilliseconds - tPrev; tPrev = sw.Elapsed.TotalMilliseconds;
             Trace.WriteLine($"[ONNX] Preprocess done | resized={resized.Width}x{resized.Height}, pad=({padX},{padY}), scale={scale:F6}, preMs={tPre:F1}");
