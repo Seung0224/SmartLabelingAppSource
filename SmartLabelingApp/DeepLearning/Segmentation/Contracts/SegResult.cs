@@ -1,12 +1,12 @@
-﻿using System.Collections.Generic;
-using System.Drawing;
+﻿using System.Drawing;
+using System.Collections.Generic;
 
 namespace SmartLabelingApp
 {
     public sealed class SegResult
     {
         // 전처리 메타
-        public int NetSize { get; set; } = 640;
+        public int NetSize { get; set; }
         public float Scale { get; set; }
         public int PadX { get; set; }
         public int PadY { get; set; }

@@ -3831,7 +3831,7 @@ namespace SmartLabelingApp
 
                         var swOverlay = System.Diagnostics.Stopwatch.StartNew();
                         // 공통 오버레이: ONNX 스타일의 그림을 두 백엔드 공통으로
-                        onnxOverlay = OverlayRendererFast.RenderEx(srcCopy, res, drawBoxes: true, fillMask: true, drawOutlines: true, drawScores: true, overlaysOut: overlays);
+                        onnxOverlay = OverlayRendererFast.RenderEx(srcCopy, res, overlaysOut: overlays);
                         swOverlay.Stop();
 
                         Log($"[ONNX] Inference 완료: ClassCount={res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms");

@@ -105,7 +105,7 @@ namespace SmartLabelingApp
             {
                 var box = new Rectangle(2, 2, 28, 28);
                 // 이하 숫자는 의미 없는 더미 값 (실행만 함)
-                BlendMaskIntoOrigROI(bmp, box, maskBuf, mw, mh, netSize: 640,
+                BlendMaskIntoOrigROI(bmp, box, maskBuf, mw, mh, netSize: Preprocess.DefaultNet,
                     scale: 1f, padX: 0, padY: 0, thr: 0.5f, alpha: 0.1f, color: Color.Red);
             }
         }
@@ -242,8 +242,8 @@ namespace SmartLabelingApp
                 so = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL };
                 if (!TryAppendCudaWithOptions(so)) so.AppendExecutionProvider_CUDA(0);
                 var sess = new InferenceSession(modelPath, so);
-                Preprocess.EnsureOnnxInput(sess, 640, ref _inputName, ref _curNet, ref _inBuf, ref _tensor, ref _nov);
-                TryWarmup(sess, 640);
+                Preprocess.EnsureOnnxInput(sess, Preprocess.DefaultNet, ref _inputName, ref _curNet, ref _inBuf, ref _tensor, ref _nov);
+                TryWarmup(sess, Preprocess.DefaultNet);
                 SmartLabelingApp.MainForm._currentRunTypeName = "GPU";
                 return sess;
             }
@@ -256,8 +256,8 @@ namespace SmartLabelingApp
                 so = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL };
                 so.AppendExecutionProvider_DML();
                 var sess = new InferenceSession(modelPath, so);
-                Preprocess.EnsureOnnxInput(sess, 640, ref _inputName, ref _curNet, ref _inBuf, ref _tensor, ref _nov);
-                TryWarmup(sess, 640);
+                Preprocess.EnsureOnnxInput(sess, Preprocess.DefaultNet, ref _inputName, ref _curNet, ref _inBuf, ref _tensor, ref _nov);
+                TryWarmup(sess, Preprocess.DefaultNet);
                 SmartLabelingApp.MainForm._currentRunTypeName = "CPU";
                 return sess;
             }
@@ -267,7 +267,7 @@ namespace SmartLabelingApp
             }
             var soCpu = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL };
             var cpu = new InferenceSession(modelPath, soCpu);
-            Preprocess.EnsureOnnxInput(cpu, 640, ref _inputName, ref _curNet, ref _inBuf, ref _tensor, ref _nov);
+            Preprocess.EnsureOnnxInput(cpu, Preprocess.DefaultNet, ref _inputName, ref _curNet, ref _inBuf, ref _tensor, ref _nov);
             SmartLabelingApp.MainForm._currentRunTypeName = "CPU";
             return cpu;
         }
@@ -300,19 +300,7 @@ namespace SmartLabelingApp
 
             string inputName = session.InputMetadata.Keys.First();
             var inMeta = session.InputMetadata[inputName];
-
-            int netH = 640, netW = 640;
-            try
-            {
-                var dims = inMeta.Dimensions;
-                if (dims.Length == 4)
-                {
-                    if (dims[2] > 0) netH = dims[2];
-                    if (dims[3] > 0) netW = dims[3];
-                }
-            }
-            catch { }
-            int netSize = Math.Max(netH, netW);
+            int netSize = Preprocess.DefaultNet;
 
             Trace.WriteLine($"[ONNX] Infer() start | net={netSize}, img={orig.Width}x{orig.Height}");
 

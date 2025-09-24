@@ -4,15 +4,10 @@
 // - 필수: tensorrt_runner.dll (trt_create_engine 등 6개 함수)
 
 using System;
-using System.Buffers;
-using System.Collections.Generic;
-using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Imaging;
-using System.Linq;
-using System.Numerics;
+using System.Diagnostics;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using System.Threading.Tasks;
 
 namespace SmartLabelingApp
 {
@@ -79,7 +74,7 @@ namespace SmartLabelingApp
             var sw = Stopwatch.StartNew();
             double tPrev = 0, tPre = 0, tInfer = 0, tPost = 0;
 
-            int net = _cachedInputNet > 0 ? _cachedInputNet : 640;
+            int net = _cachedInputNet > 0 ? _cachedInputNet : Preprocess.DefaultNet;
             Trace.WriteLine($"[TRT] Infer() start | net={net}, img={orig.Width}x{orig.Height}");
 
             // ---- 1) 전처리
