@@ -17,6 +17,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Documents;
 using System.Windows.Forms;
+using static TheArtOfDevHtmlRenderer.Adapters.RGraphicsPath;
 
 namespace SmartLabelingApp
 {
@@ -691,6 +692,10 @@ namespace SmartLabelingApp
                 else if (e.Button == MouseButtons.Right)
                 {
                     EnterAiRoiMode();
+                }
+                else if (e.Button == MouseButtons.Middle)
+                {
+                    MessageBox.Show("Hello World", "AI Tool", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
             };
 
@@ -2598,7 +2603,6 @@ namespace SmartLabelingApp
 
                 if (confirm == DialogResult.Yes)
                 {
-
                     StartAutoLabelAllImagesAsync();
                 }
                 return true;
@@ -2647,8 +2651,10 @@ namespace SmartLabelingApp
             AdjustLabelChipWidths();
         }
 
+        // LabelInfo는 chip.Tag로 쓰고 계신 기존 타입 그대로 사용 (Name, Color 등 포함 가정)
         private Guna2Panel MakeLabelChip(string labelName, Color color, int width, int height)
         {
+            // Label Chip UI
             var chip = new Guna2Panel();
             chip.Tag = new LabelInfo(labelName, color);
             chip.FillColor = Color.White;
@@ -2665,6 +2671,7 @@ namespace SmartLabelingApp
             chip.ShadowDecoration.BorderRadius = chip.BorderRadius;
             chip.ShadowDecoration.Parent = chip;
 
+            // Color swatch
             var swatch = new Guna2Panel();
             swatch.Name = "__LabelSwatch";
             swatch.Size = new Size(18, 18);
@@ -2674,16 +2681,28 @@ namespace SmartLabelingApp
             swatch.BorderThickness = 1;
             swatch.Location = new Point(2, (chip.Height - swatch.Height) / 2);
 
-            var nameLbl = new Guna2HtmlLabel();
+            // Text label
+            var nameLbl = new Label();
             nameLbl.Name = "__LabelText";
             nameLbl.BackColor = Color.Transparent;
             nameLbl.AutoSize = true;
             nameLbl.Text = labelName;
             nameLbl.Location = new Point(swatch.Right + 2, (chip.Height - nameLbl.Height) / 2);
 
+            // Click(좌클릭) 동작 유지
             chip.Click += OnChipClick_Simple;
             swatch.Click += OnChipClick_Simple;
             nameLbl.Click += OnChipClick_Simple;
+
+            // 컨텍스트 메뉴 구성
+            var menu = new ContextMenuStrip();
+            menu.Items.Add("Rename", null, (s, e) => BeginInlineRename(chip, nameLbl, swatch));
+            menu.Items.Add("Delete", null, (s, e) => DeleteChip(chip));
+
+            // 우클릭 어디서든 같은 메뉴
+            chip.ContextMenuStrip = menu;
+            swatch.ContextMenuStrip = menu;
+            nameLbl.ContextMenuStrip = menu;
 
             chip.Controls.Add(swatch);
             chip.Controls.Add(nameLbl);
@@ -2696,6 +2715,127 @@ namespace SmartLabelingApp
 
             return chip;
         }
+
+        // --- Rename: 칩 위 인라인 편집 TextBox ---
+        private void BeginInlineRename(Guna2Panel chip, Label nameLbl, Control swatch)
+        {
+            // 이미 편집 중이면 무시
+            if (chip.Controls.Find("__EditBox", false).FirstOrDefault() is TextBox) return;
+
+            var tb = new TextBox();
+            tb.Name = "__EditBox";
+            tb.BorderStyle = BorderStyle.None;
+            tb.Font = nameLbl.Font;
+            tb.Text = nameLbl.Text;
+            tb.Width = Math.Max(80, nameLbl.Width + 20);
+            tb.Location = new Point(nameLbl.Left - 1, (chip.Height - tb.PreferredHeight) / 2);
+            tb.TabIndex = 0;
+
+            // 시각적 구분선(밑줄 느낌)
+            var underline = new Panel
+            {
+                Height = 1,
+                Width = tb.Width,
+                BackColor = Color.Silver,
+                Left = tb.Left,
+                Top = tb.Bottom + 2
+            };
+
+            // 기존 Label 가리기
+            nameLbl.Visible = false;
+
+            // 저장/취소 로직
+            void Commit()
+            {
+                var newName = tb.Text?.Trim();
+                if (string.IsNullOrEmpty(newName))
+                {
+                    // 빈 이름 방지: 원래 이름 유지
+                    Cancel();
+                    return;
+                }
+
+                // 필요하면 여기서 이름 중복 체크 로직 추가 가능 (FindExistingLabel(newName) 등)
+
+                nameLbl.Text = newName;
+                nameLbl.AutoSize = true;
+
+                // Tag(LabelInfo)도 갱신
+                if (chip.Tag is LabelInfo info)
+                {
+                    info.Name = newName; // LabelInfo에 Name 세터가 있다고 가정
+                    chip.Tag = info;
+                }
+
+                // 위치 재정렬
+                nameLbl.Location = new Point(swatch.Right + 2, (chip.Height - nameLbl.Height) / 2);
+
+                // 편집 박스 제거
+                chip.Controls.Remove(tb);
+                tb.Dispose();
+                chip.Controls.Remove(underline);
+                underline.Dispose();
+
+                nameLbl.Visible = true;
+
+                // 외부가 필요하면 여기서 "라벨 이름 변경됨" 이벤트/콜백 호출
+                // OnLabelRenamed?.Invoke(oldName, newName);
+            }
+
+            void Cancel()
+            {
+                chip.Controls.Remove(tb);
+                tb.Dispose();
+                chip.Controls.Remove(underline);
+                underline.Dispose();
+                nameLbl.Visible = true;
+            }
+
+            tb.KeyDown += (s, e) =>
+            {
+                if (e.KeyCode == Keys.Enter) { e.Handled = true; e.SuppressKeyPress = true; Commit(); }
+                else if (e.KeyCode == Keys.Escape) { e.Handled = true; e.SuppressKeyPress = true; Cancel(); }
+            };
+            tb.Leave += (s, e) => Commit();
+
+            chip.Controls.Add(tb);
+            chip.Controls.Add(underline);
+            tb.BringToFront();
+            underline.BringToFront();
+            tb.Focus();
+            tb.SelectAll();
+        }
+
+        // --- Delete: 칩 제거(+확인) ---
+        private void DeleteChip(Guna2Panel chip)
+        {
+            if (chip.Tag is LabelInfo info)
+            {
+                var confirm = new Guna.UI2.WinForms.Guna2MessageDialog
+                {
+                    Parent = this,
+                    Caption = "Delete Label",
+                    Text = "현재 Label을 삭제 하시겠습니까?",
+                    Buttons = Guna.UI2.WinForms.MessageDialogButtons.YesNo,
+                    Icon = Guna.UI2.WinForms.MessageDialogIcon.Question,
+                    Style = Guna.UI2.WinForms.MessageDialogStyle.Light
+                }.Show();
+
+                if (confirm == DialogResult.Yes)
+                {
+                    // 부모 컨테이너에서 제거
+                    var parent = chip.Parent;
+                    chip.Visible = false;
+                    parent?.Controls.Remove(chip);
+                    chip.Dispose();
+                }
+                else
+                {
+                    return;
+                }
+            }
+        }
+
 
         private void OnChipClick_Simple(object sender, System.EventArgs e)
         {

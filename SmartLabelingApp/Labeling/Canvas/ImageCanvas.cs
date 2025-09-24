@@ -1170,7 +1170,7 @@ namespace SmartLabelingApp
             {
                 if (Selection != null && Selection.HasAny)
                 {
-                    float step = e.Control ? 20f : 5f;
+                    float step = e.Control ? 1f : 5f;
                     float dx = (e.KeyCode == Keys.Left) ? -step : (e.KeyCode == Keys.Right ? step : 0f);
                     float dy = (e.KeyCode == Keys.Up) ? -step : (e.KeyCode == Keys.Down ? step : 0f);
 
