@@ -34,24 +34,6 @@ namespace SmartLabelingApp
             try { ForceWarmupSimdKernels(); } catch { /* ignore */ }
         }
 
-        #region Fields
-        
-        public enum LabelName
-        {
-            Liquid = 0,
-            Default = 1
-        }
-        // ----- 라벨/배지 그리기용 상수 (UI 장식) -----
-        const int LABEL_BADGE_GAP_PX = 2;
-        const int LABEL_BADGE_PADX = 4;
-        const int LABEL_BADGE_PADY = 3;
-        const int LABEL_BADGE_BORDER_PX = 2;
-        const int LABEL_BADGE_ACCENT_W = 4;
-        const int LABEL_BADGE_WIPE_PX = 1;
-
-        // 세그먼트(폴리라인 연결용) 보조 구조체
-        private struct Seg { public PointF A, B; public Seg(PointF a, PointF b) { A = a; B = b; } }
-
         // ----- 입력 텐서 관련 캐시 -----
         // _inputName : ONNX 입력 이름
         // _curNet    : 현재 확보된 텐서/버퍼가 가리키는 네트 입력 한 변 크기(예: 640)
@@ -71,19 +53,6 @@ namespace SmartLabelingApp
         private static InferenceSession _cachedSession = null;
         private static string _cachedModelPath = null;
         private static readonly object _sessionLock = new object();
-
-        #endregion
-
-        #region Types
-        // ----- 오버레이 결과 -----
-        public struct OverlayResult
-        {
-            public Bitmap Image;     // 합성된 최종 이미지
-            public List<SmartLabelingApp.ImageCanvas.OverlayItem> Overlays; // UI 폴리라인/박스/배지
-        }
-        #endregion
-
-        #region SessionManagement
 
         private static void ForceWarmupSimdKernels()
         {
@@ -137,33 +106,8 @@ namespace SmartLabelingApp
         // 세션을 준비하고 간단한 프로그레스 메시지를 보고합니다.
         public static InferenceSession EnsureSession(string modelPath, IProgress<(int percent, string status)> progress = null)
         {
-            int p = 0;
-            ReportStep(progress, ref p, 5, "모델 경로 확인");
             double initMs = 0;
-            bool createdNew = false;
-            ReportStep(progress, ref p, 12, "Execution Provider 확인");
-            ReportStep(progress, ref p, 20, "세션 옵션 구성");
-            ReportStep(progress, ref p, 35, "세션 생성 준비");
-
             var session = GetOrCreateSession(modelPath, out initMs);
-            createdNew = initMs > 0;
-
-            if (createdNew) ReportStep(progress, ref p, 60, $"세션 생성 완료 ({initMs:F0} ms)");
-            else { ReportStep(progress, ref p, 45, "캐시된 세션 재사용"); ReportStep(progress, ref p, 60, "세션 확인 완료"); }
-
-            // 메타데이터 읽기(선택)
-            try
-            {
-                ReportStep(progress, ref p, 70, "모델 IO 메타데이터 읽기");
-                var inputs = session.InputMetadata;
-                var outputs = session.OutputMetadata;
-                ReportStep(progress, ref p, 78, $"입력 {inputs.Count} / 출력 {outputs.Count} 확인");
-            }
-            catch { ReportStep(progress, ref p, 78, "IO 메타데이터 확인(옵션) 건너뜀"); }
-
-            ReportStep(progress, ref p, 85, "웜업 준비");
-            ReportStep(progress, ref p, 92, "리소스 초기화");
-            ReportStep(progress, ref p, 100, "완료");
             return session;
         }
 
@@ -271,24 +215,6 @@ namespace SmartLabelingApp
             SmartLabelingApp.MainForm._currentRunTypeName = "CPU";
             return cpu;
         }
-
-        #endregion
-
-        #region MaskAndOverlay
-        // --------------------------------------------------------------------------------
-        // Overlay / OverlayFast / Render
-        // - Overlay      : 마스크를 정확한 경로로 재매핑하는 참고 구현(단계가 조금 더 많음)
-        // - OverlayFast  : ROI 안에서 바로 bilinear로 샘플링/블렌딩하는 빠른 버전
-        // - Render       : OverlayFast + 폴리라인/배지 등 오버레이 목록까지 만들어 반환
-        //
-        // 오버레이 핵심 절차:
-        //   1) 각 탐지 d에 대해: mask = sigmoid( sum_k coeff[k] * proto[k] )
-        //      (ComputeMaskSIMD는 이 수식을 SIMD로 빠르게 수행)
-        //   2) mask를 네트 입력 크기(net x net) 기준 좌표로 맞추고(pad/scale 보정)
-        //   3) 원본 좌표로 다시 보간한 뒤, 박스 ROI 밖은 0으로 만들어 누수 방지
-        //   4) 색상+알파로 원본에 합성(스레시홀드 미만 픽셀은 건너뜀)
-        //   5) (옵션) 마스크 외곽선 폴리라인을 계산해서 UI 오버레이로 추가
-        // --------------------------------------------------------------------------------
 
         private static void BlendMaskIntoOrigROI(
             Bitmap dstRGBA, Rectangle boxOrig, float[] mask, int mw, int mh, int netSize,
@@ -449,21 +375,5 @@ namespace SmartLabelingApp
             }
         }
 
-        #endregion
-
-        #region Utils
-        
-
-        // 진행률 보고(옵션)
-        private static void ReportStep(IProgress<(int percent, string status)> progress, ref int cur, int next, string msg)
-        {
-            if (progress == null) return;
-            if (next < cur) next = cur;
-            if (next > 100) next = 100;
-            cur = next;
-            Thread.Sleep(50);
-            progress.Report((cur, msg));
-        }
-        #endregion
     }
 }
