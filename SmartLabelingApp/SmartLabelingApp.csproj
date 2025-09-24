@@ -162,7 +162,7 @@
     <PackageReference Include="Microsoft-WindowsAPICodePack-Shell">
       <Version>1.1.5</Version>
     </PackageReference>
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML">
       <Version>1.22.1</Version>
     </PackageReference>
     <PackageReference Include="Microsoft.WindowsAPICodePack.Shell">

@@ -3831,10 +3831,11 @@ namespace SmartLabelingApp
 
                         var swOverlay = System.Diagnostics.Stopwatch.StartNew();
                         // 공통 오버레이: ONNX 스타일의 그림을 두 백엔드 공통으로
-                        onnxOverlay = OverlayRendererFast.RenderEx(srcCopy, res, overlaysOut: overlays);
+                        onnxOverlay = OverlayRendererFast.RenderEx(srcCopy, res, drawBoxes: true, fillMask: true, drawOutlines: true, drawScores: true, overlaysOut: overlays);
                         swOverlay.Stop();
 
-                        Log($"[ONNX] Inference 완료: {res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms, overlay={swOverlay.Elapsed.TotalMilliseconds:F0}ms");
+                        Log($"[ONNX] Inference 완료: ClassCount={res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms");
+                        Log($"[ONNX] DrawOverlay 완료: {swOverlay.Elapsed.TotalMilliseconds:F0}ms");
                         Log($"[ONNX] 총합 ≈ {(res.PreMs + res.InferMs + res.PostMs + swOverlay.Elapsed.TotalMilliseconds):F0}ms");
                     }
                     else if (_engineSession != null)
@@ -3843,17 +3844,18 @@ namespace SmartLabelingApp
                         var swAll = System.Diagnostics.Stopwatch.StartNew();
 
                         // 1) 추론 (SegResult 반환, ProtoFlat=KHW 보장)
-                        var seg = _engineSession.Infer(srcCopy);
-                        var inferMs = seg.InferMs;
+                        var res = _engineSession.Infer(srcCopy);
+                        var inferMs = res.InferMs;
 
                         // 2) 공통 오버레이 (이전 _engineSession.OverlayFast 제거)
                         var swOverlay = System.Diagnostics.Stopwatch.StartNew();
-                        engineOverlay = OverlayRendererFast.RenderEx(srcCopy, seg, overlaysOut: overlays);
+                        engineOverlay = OverlayRendererFast.RenderEx(srcCopy, res, overlaysOut: overlays);
                         swOverlay.Stop();
 
                         swAll.Stop();
-                        Log($"[TRT] Inference 완료: {seg.Dets.Count}개, pre={seg.PreMs:F0}ms, infer={inferMs:F0}ms, post={seg.PostMs:F0}ms, overlay={swOverlay.Elapsed.TotalMilliseconds:F0}ms");
-                        Log($"[TRT] 총합 ≈ {(seg.PreMs + inferMs + seg.PostMs + swOverlay.Elapsed.TotalMilliseconds):F0}ms");
+                        Log($"[TRT] Inference 완료: ClassCount={res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms");
+                        Log($"[TRT] DrawOverlay 완료: {swOverlay.Elapsed.TotalMilliseconds:F0}ms");
+                        Log($"[TRT] 총합 ≈ {(res.PreMs + res.InferMs + res.PostMs + swOverlay.Elapsed.TotalMilliseconds):F0}ms");
                     }
                 }, token).ConfigureAwait(true);
             }

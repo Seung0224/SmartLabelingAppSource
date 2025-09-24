@@ -258,7 +258,7 @@ namespace SmartLabelingApp
                 var sess = new InferenceSession(modelPath, so);
                 Preprocess.EnsureOnnxInput(sess, 640, ref _inputName, ref _curNet, ref _inBuf, ref _tensor, ref _nov);
                 TryWarmup(sess, 640);
-                SmartLabelingApp.MainForm._currentRunTypeName = "DML EP";
+                SmartLabelingApp.MainForm._currentRunTypeName = "CPU";
                 return sess;
             }
             catch
