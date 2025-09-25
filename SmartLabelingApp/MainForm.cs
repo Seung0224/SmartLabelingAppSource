@@ -84,10 +84,10 @@ namespace SmartLabelingApp
         private const int VIEWER_MIN_W = 1024;
         private const int VIEWER_HORIZONTAL_MARGIN = 320;
 
-        private const int LOG_X = 5;
-        private const int LOG_Y = -178;
-        private const int LOG_WIDTH = 316;
-        private const int LOG_HEIGHT = 1224;
+        private const int LOG_X = 6;
+        private const int LOG_W = 4;
+        private const int LOG_GAP = 39;           // imageDisplay와 logDisplay 사이 간격
+        private const int OUTER_MARGIN = 9;      // 작업영역 하단 여백(바닥에 딱 붙지 않게)
 
         private const int LABEL_CHIP_MIN_W = 74;
 
@@ -987,14 +987,24 @@ namespace SmartLabelingApp
                 UpdateViewerBounds();
                 if (_canvas != null && _canvas.Image != null)
                     _canvas.ZoomToFit();
+
+                UpdateLogLayout();
             };
 
             CreateHotkeyPanel();
             UpdateViewerBounds();
 
 
-            _canvasHost.Resize += (s, e) => UpdateSideRailsLayout();
-            this.Resize += (s, e) => UpdateSideRailsLayout();
+            _canvasHost.Resize += (s, e) =>
+            {
+                UpdateSideRailsLayout();
+                UpdateLogLayout();
+            };
+            this.Resize += (s, e) =>
+            {
+                UpdateSideRailsLayout();
+                UpdateLogLayout();
+            };
             UpdateSideRailsLayout();
 
             this.LocationChanged += (s, e) => RepositionBrushWindow();
@@ -1040,25 +1050,54 @@ namespace SmartLabelingApp
                 BorderColor = HOTKEY_PANEL_BORDER,
                 BorderThickness = 2,
                 BackColor = Color.Transparent,
-                Location = new Point(_canvas.Left + LOG_X, _canvasLayer.Bottom + LOG_Y),
-                Size = new Size(_canvasLayer.ClientSize.Width - LOG_WIDTH, _canvasLayer.ClientSize.Height - LOG_HEIGHT),
+                // ↓ 위치/크기는 여기서 설정하지 않음 (동적 배치)
                 ShadowDecoration = { Parent = _logPanel }
             };
 
             _logListBox = new ListBox
             {
-                Location = new Point(5, 5), // 패널 내부 여백
-                Size = new Size(_canvasLayer.ClientSize.Width - LOG_WIDTH - 10, _canvasLayer.ClientSize.Height - LOG_HEIGHT - 10), // 패널 크기보다 작게
+                Location = new Point(5, 5),   // 패널 내부 여백
                 BorderStyle = BorderStyle.None,
                 Font = new Font("Segoe UI", 9f, FontStyle.Regular),
                 BackColor = Color.White,
                 ForeColor = Color.Black
+                // ↓ Size는 UpdateLogLayout에서 패널 크기에 맞춰 조정
             };
 
             _logPanel.Controls.Add(_logListBox);
             this.Controls.Add(_logPanel);
             _logPanel.BringToFront();
+
+            UpdateLogLayout();
         }
+
+        private void UpdateLogLayout()
+        {
+            if (_logPanel == null || _canvas == null) return;
+
+            // 1) 기준: 이미지 디스플레이(_canvas)
+            int left = _canvas.Left + LOG_X;
+            int width = _canvas.Width + LOG_W;
+            int top = _canvas.Bottom + LOG_GAP;
+
+            // 2) 하단 기준: 우측/좌측 레일이 있더라도 작업영역 하단과 맞춤
+            int bottom = this.ClientSize.Height - OUTER_MARGIN;
+            // (상단의 TopBar/TITLE 등의 Dock 영역은 WinForms 레이아웃에서 이미 제외됨)
+
+            int height = Math.Max(60, bottom - top);  // 최소 높이 60 보장
+            if (height < 60) height = 60;
+
+            _logPanel.SetBounds(left, top, width, height);
+
+            // 내부 ListBox 크기(패널 내부 여백 5px 반영)
+            int lbW = Math.Max(10, width - 10);
+            int lbH = Math.Max(10, height - 10);
+            _logListBox.Size = new Size(lbW, lbH);
+
+            _logPanel.BringToFront();
+        }
+
+
         private void AddLog(string message)
         {
             if (_logListBox.InvokeRequired)
