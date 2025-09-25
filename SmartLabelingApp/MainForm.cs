@@ -4041,8 +4041,7 @@ namespace SmartLabelingApp
             string pythonExe = Path.Combine(venvDir, "Scripts", "python.exe");
             string yoloExe = Path.Combine(venvDir, "Scripts", "yolo.exe");
 
-            // ★ CUDA 가용성 플래그(나중에 선언될 device/batch에 반영하기 위해 미리 준비)
-            bool cudaUsable = false; // ★
+            bool cudaUsable = false;
 
             if (string.IsNullOrEmpty(pretrainedWeightsPath) || !File.Exists(pretrainedWeightsPath))
             {
@@ -4085,7 +4084,7 @@ namespace SmartLabelingApp
                 zipPath = ofd.FileName;
             }
 
-            using (var overlay = new ProgressOverlay(this, "환경 준비 (10 ~ 20분 정도 소요됩니다)", true))
+            using (var overlay = new ProgressOverlay(this, "환경 준비 (10분 ~ 20분 소요)", true))
             {
                 try
                 {
@@ -4103,7 +4102,7 @@ namespace SmartLabelingApp
                     }
                     catch
                     {
-                        cudaUsable = false; // ★ 문제시 CPU로 폴백
+                        cudaUsable = false;
                     }
 
                     overlay.Report(100, "환경 준비 완료");
@@ -4176,12 +4175,11 @@ namespace SmartLabelingApp
             string runName = "finetune_" + DateTime.Now.ToString("yyyyMMdd_HHmmss");
             string bestOut = Path.Combine(projectDir, runName, "weights", "best.pt");
 
-            int epochs = 20;
-            int imgsz = 1024;
+            int epochs = TrainingConfig.Epochs;
+            int imgsz = TrainingConfig.ImgSize;
 
-            // ★ 여기서 cudaUsable 결과를 반영해 batch/device를 결정 (나머지 로직/인자 조립은 기존 그대로)
-            int batch = cudaUsable ? 8 : 4;       // ★ CPU면 메모리 고려해 축소
-            string device = cudaUsable ? "0" : "cpu"; // ★ 5090 커널 미지원 시 자동 CPU
+            int batch = cudaUsable ? TrainingConfig.BatchGpu : TrainingConfig.BatchCpu;
+            string device = cudaUsable ? TrainingConfig.DeviceGpu : TrainingConfig.DeviceCpu;
 
             string args = string.Join(" ",
                 "segment", "train",

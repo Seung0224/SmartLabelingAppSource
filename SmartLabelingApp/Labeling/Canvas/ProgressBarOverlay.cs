@@ -31,11 +31,10 @@ public class ProgressOverlay : IDisposable
         _overlay = new Form();
         _overlay.FormBorderStyle = FormBorderStyle.None;
         _overlay.StartPosition = FormStartPosition.Manual;
-        _overlay.ShowInTaskbar = false;
-        _overlay.TopMost = true;                 // ★ 항상 최상위로
+        _overlay.ShowInTaskbar = true; // Alt+Tab 전환에 정상 노출
+        _overlay.TopMost = false; // 항상 최상단 제거
         _overlay.BackColor = Color.Black;
         _overlay.Opacity = 0.85;
-        _overlay.Owner = owner;
 
         Rectangle r = owner.RectangleToScreen(owner.ClientRectangle);
         _overlay.Bounds = r;

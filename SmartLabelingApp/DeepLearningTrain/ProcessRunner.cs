@@ -16,6 +16,17 @@ using System.Threading.Tasks;
 
 namespace SmartLabelingApp
 {
+    internal static class TrainingConfig
+    {
+        public const int Epochs = 20;   // GPU용 epoch
+        
+        public const int ImgSize = 640;
+        public const int BatchGpu = 8;
+        public const int BatchCpu = 4;
+        public const string DeviceGpu = "0";
+        public const string DeviceCpu = "cpu";
+    }
+
     // ============================
     // Process helpers (Exec & Logs)
     // ============================
@@ -611,13 +622,18 @@ namespace SmartLabelingApp
                     p.BeginOutputReadLine();
                     p.BeginErrorReadLine();
 
+
                     // 하트비트: 무출력 1.5초 이상 → endPct-1 까지만 미세 증가
                     while (!p.WaitForExit(100))
                     {
                         if (sw.ElapsedMilliseconds - lastOutputMs > 1500 && lastReportedPct < endPct - 1)
                         {
                             lastReportedPct++;
-                            progress?.Invoke(lastReportedPct, "학습 진행 중...");
+
+                            double frac = (double)lastEpoch / totalEpochs;
+                            string hbMsg = $"학습 중...";
+
+                            progress?.Invoke(lastReportedPct, hbMsg);
                             lastOutputMs = sw.ElapsedMilliseconds;
                         }
                     }
@@ -628,8 +644,6 @@ namespace SmartLabelingApp
             });
         }
     }
-
-
 
 
     // ==================
