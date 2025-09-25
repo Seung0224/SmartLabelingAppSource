@@ -171,6 +171,23 @@ namespace SmartLabelingApp
     // ======================
     internal static class GpuDetector
     {
+        internal static bool CanUseCudaForKernels(string pythonExe, string workingDir)
+        {
+            string cmd =
+                "-c \"import sys;" +
+                "try:\n" +
+                " import torch\n" +
+                " ok = torch.cuda.is_available()\n" +
+                " if ok:\n" +
+                "  a=torch.tensor([1], device='cuda'); torch.cuda.synchronize()\n" +
+                " sys.exit(0 if ok else 2)\n" +
+                "except Exception:\n" +
+                " sys.exit(3)\"";
+
+            int code = ProcessRunner.RunProcess(pythonExe, cmd, workingDir);
+            // 0: cuda ok, 2: cuda unavailable, 3: runtime error (커널 불일치 등)
+            return code == 0;
+        }
         internal static bool HasNvidiaGpu()
         {
             try
@@ -242,16 +259,23 @@ namespace SmartLabelingApp
     {
         internal static (bool installed, bool isCuda) CheckTorchVariant(string pythonExe, string workingDir)
         {
-            string cmd = "-c \"import sys; import importlib; m=importlib.util.find_spec('torch'); import torch as t if m else None; sys.exit(0 if m and t.cuda.is_available() else (2 if m else 1))\"";
+            // 0=installed+cuda, 2=installed+cpu, 1=not installed
+            string cmd = "-c \"import sys, importlib, importlib.util;" +
+                         "m=importlib.util.find_spec('torch');" +
+                         "t=None; exec('import torch as t') if m else None;" +
+                         "sys.exit(0 if (m and hasattr(t, 'cuda') and t.cuda.is_available()) else (2 if m else 1))\"";
+
             int code = ProcessRunner.RunProcess(pythonExe, cmd, workingDir);
             if (code == 0) return (true, true);
             if (code == 2) return (true, false);
             return (false, false);
         }
 
+        // TorchInspector.IsUltralyticsInstalled - FIX
         internal static bool IsUltralyticsInstalled(string pythonExe, string workingDir)
         {
-            string cmd = "-c \"import sys,importlib; sys.exit(0 if importlib.util.find_spec('ultralytics') else 1)\"";
+            string cmd = "-c \"import sys, importlib, importlib.util;" +
+                         "sys.exit(0 if importlib.util.find_spec('ultralytics') else 1)\"";
             int code = ProcessRunner.RunProcess(pythonExe, cmd, workingDir);
             return code == 0;
         }

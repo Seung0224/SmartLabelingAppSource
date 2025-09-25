@@ -4105,6 +4105,8 @@ namespace SmartLabelingApp
             string pythonExe = Path.Combine(venvDir, "Scripts", "python.exe");
             string yoloExe = Path.Combine(venvDir, "Scripts", "yolo.exe");
 
+            // ★ CUDA 가용성 플래그(나중에 선언될 device/batch에 반영하기 위해 미리 준비)
+            bool cudaUsable = false; // ★
 
             if (string.IsNullOrEmpty(pretrainedWeightsPath) || !File.Exists(pretrainedWeightsPath))
             {
@@ -4120,8 +4122,6 @@ namespace SmartLabelingApp
                 return;
             }
 
-
-
             string zipPath;
             using (var ofd = new OpenFileDialog())
             {
@@ -4131,7 +4131,6 @@ namespace SmartLabelingApp
                 ofd.CheckPathExists = true;
                 ofd.Multiselect = false;
                 ofd.RestoreDirectory = true;
-
 
                 string initialDir;
                 if (!string.IsNullOrEmpty(_lastExportZipPath) && File.Exists(_lastExportZipPath))
@@ -4150,7 +4149,6 @@ namespace SmartLabelingApp
                 zipPath = ofd.FileName;
             }
 
-
             using (var overlay = new ProgressOverlay(this, "환경 준비", true))
             {
                 try
@@ -4160,6 +4158,18 @@ namespace SmartLabelingApp
                         baseDir, venvDir, pythonExe,
                         (pct, status) => overlay.Report(pct, status)
                     );
+
+                    // ★ 여기서 CUDA 커널 가용성 사전 점검(5090 등의 커널 미지원 시 자동 CPU 폴백)
+                    overlay.Report(92, "CUDA 가용성 점검..."); // ★ (표시만 추가, 기존 흐름 영향 없음)
+                    try
+                    {
+                        cudaUsable = GpuDetector.CanUseCudaForKernels(pythonExe, baseDir); // ★
+                    }
+                    catch
+                    {
+                        cudaUsable = false; // ★ 문제시 CPU로 폴백
+                    }
+
                     overlay.Report(100, "환경 준비 완료");
                 }
                 catch (Exception ex)
@@ -4176,7 +4186,6 @@ namespace SmartLabelingApp
                     return;
                 }
             }
-
 
             string extractRoot = Path.Combine(baseDir, "Result");
             string dataYamlPath = null;
@@ -4226,7 +4235,6 @@ namespace SmartLabelingApp
                 }
             }
 
-
             string projectDir = Path.Combine(baseDir, "runs");
             Directory.CreateDirectory(projectDir);
             string runName = "finetune_" + DateTime.Now.ToString("yyyyMMdd_HHmmss");
@@ -4234,22 +4242,24 @@ namespace SmartLabelingApp
 
             int epochs = 20;
             int imgsz = 1024;
-            int batch = 8;
-            string device = "0";
+
+            // ★ 여기서 cudaUsable 결과를 반영해 batch/device를 결정 (나머지 로직/인자 조립은 기존 그대로)
+            int batch = cudaUsable ? 8 : 4;       // ★ CPU면 메모리 고려해 축소
+            string device = cudaUsable ? "0" : "cpu"; // ★ 5090 커널 미지원 시 자동 CPU
 
             string args = string.Join(" ",
-    "segment", "train",
-    "model=" + YoloCli.Quote(pretrainedWeightsPath),
-    "data=" + YoloCli.Quote(dataYamlPath),
-    "epochs=" + epochs,
-    "imgsz=" + imgsz,
-    "batch=" + batch,
-    "device=" + device,
-    "project=" + YoloCli.Quote(projectDir),
-    "retina_masks=True",
-    "overlap_mask=True",
-    "name=" + YoloCli.Quote(runName)
-);
+                "segment", "train",
+                "model=" + YoloCli.Quote(pretrainedWeightsPath),
+                "data=" + YoloCli.Quote(dataYamlPath),
+                "epochs=" + epochs,
+                "imgsz=" + imgsz,
+                "batch=" + batch,
+                "device=" + device,
+                "project=" + YoloCli.Quote(projectDir),
+                "retina_masks=True",
+                "overlap_mask=True",
+                "name=" + YoloCli.Quote(runName)
+            );
 
             string bestCopy = null;
             string onnxPath = null;
@@ -4264,7 +4274,6 @@ namespace SmartLabelingApp
                     int exit = await YoloTrainer.RunYoloTrainWithEpochProgressAsync(cli.fileName, cli.argumentsPrefix + " " + args, baseDir, (pct, status) => overlay2.Report(pct, status), 0, 96);
                     if (exit != 0)
                         throw new Exception($"YOLO 학습 프로세스가 실패했습니다. (exit={exit})");
-
 
                     overlay2.Report(98, "결과 수집...");
                     if (!File.Exists(bestOut))
@@ -4290,7 +4299,6 @@ namespace SmartLabelingApp
                     return;
                 }
             }
-
 
             if (!string.IsNullOrEmpty(bestCopy) && File.Exists(bestCopy))
             {
@@ -4350,7 +4358,6 @@ namespace SmartLabelingApp
                 }
             }
 
-
             {
                 var msg = "학습이 완료되었습니다.\n\n" +
                           $"runs 경로: {Path.Combine(projectDir, runName)}" +
@@ -4368,30 +4375,6 @@ namespace SmartLabelingApp
                 }.Show();
             }
         }
-
-
-        private static bool ProbeYoloTaskIsSegment(string pythonExe, string modelPath, string workdir)
-        {
-            try
-            {
-                var psi = new System.Diagnostics.ProcessStartInfo();
-                psi.FileName = pythonExe;
-                psi.Arguments = "-c \"from ultralytics import YOLO; import sys; m=YOLO(sys.argv[1]); print(m.task)\" \"" + modelPath + "\"";
-                psi.WorkingDirectory = workdir;
-                psi.UseShellExecute = false;
-                psi.RedirectStandardOutput = true;
-                psi.RedirectStandardError = true;
-                using (var p = System.Diagnostics.Process.Start(psi))
-                {
-                    string stdout = p.StandardOutput.ReadToEnd();
-                    string _ = p.StandardError.ReadToEnd();
-                    p.WaitForExit();
-                    return p.ExitCode == 0 && stdout.Trim().ToLowerInvariant().Contains("segment");
-                }
-            }
-            catch { return false; }
-        }
-
 
         private static List<PointF> ResampleClosedByArcLen(List<PointF> closed, int target)
         {
