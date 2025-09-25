@@ -49,12 +49,10 @@ namespace SmartLabelingApp
         private static readonly Color HOTKEY_PANEL_FILL = Color.LightSkyBlue;
         private static readonly Color HOTKEY_PANEL_BORDER = Color.LightGray;
 
-
         private const int TOPBAR_H = 32;
         private const int PAD_V = 2;
         private const int PAD_H = 8;
         private const int GAP = 4;
-
 
         private const int RIGHT_DOCK_W = 90;
         private const int RIGHT_DOCK_T = 1;
@@ -68,16 +66,13 @@ namespace SmartLabelingApp
         private const int RIGHT_BAR2_H = 255;
         private const int RIGHT_BAR_GAP = 4;
 
-
         private const int RIGHT_BAR3_H = 80;
         private const bool RIGHT_BAR3_SNAP_TO_VIEWER = true;
         private const int RIGHT_BAR3_TAIL = 5;
         private const int RIGHT_BAR_MIN_H = 40;
 
-
         private const int ACTION3_TOP = 5;
         private const int ACTION3_GAP = 8;
-
 
         private const int FRAME_X = 207;
         private const int FRAME_X_OFFSET = 85;
@@ -87,28 +82,22 @@ namespace SmartLabelingApp
         private const int FRAME_H = 547;
         private const int FRAME_BORDER = 2;
 
-
         private const int VIEWER_MIN_W = 1024;
         private const int VIEWER_HORIZONTAL_MARGIN = 320;
 
-
-        private Guna2Panel _logPanel;
-        private ListBox _logListBox;
-
-        private const int LOG_X = 215;
-        private const int LOG_Y = 878;
-        private const int LOG_WIDTH = 1602;
-        private const int LOG_HEIGHT = 193;
-
-
-        private int VIEWER_MAX_W =>
-            Math.Max(VIEWER_MIN_W, Screen.FromControl(this).WorkingArea.Width - VIEWER_HORIZONTAL_MARGIN);
-
+        private const int LOG_X = 5;
+        private const int LOG_Y = -178;
+        private const int LOG_WIDTH = 316;
+        private const int LOG_HEIGHT = 1224;
 
         private const int LABEL_CHIP_MIN_W = 74;
 
-
-        private bool _yoloLoadedForCurrentImage = false;
+        private Guna2Panel _logPanel;
+        private ListBox _logListBox;
+       
+        private int VIEWER_MAX_W =>
+            Math.Max(VIEWER_MIN_W, Screen.FromControl(this).WorkingArea.Width - VIEWER_HORIZONTAL_MARGIN);
+        
         private string _lastYoloExportRoot;
         private readonly Dictionary<string, Color> _classColorMap = new Dictionary<string, Color>(StringComparer.OrdinalIgnoreCase);
 
@@ -125,7 +114,6 @@ namespace SmartLabelingApp
                 Color = color;
             }
         }
-
 
         private static readonly HashSet<string> _imgExts =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -846,9 +834,6 @@ namespace SmartLabelingApp
             _canvas.SetBrushDiameter(_brushDiameterPx);
             _canvas.ToolEditBegan += () => HideBrushWindow();
 
-
-
-
             _canvas.MouseDown += (s, e) =>
             {
                 if (!_canvas.Focused) _canvas.Focus();
@@ -1056,15 +1041,15 @@ namespace SmartLabelingApp
                 BorderColor = HOTKEY_PANEL_BORDER,
                 BorderThickness = 2,
                 BackColor = Color.Transparent,
-                Location = new Point(LOG_X, LOG_Y),
-                Size = new Size(LOG_WIDTH, LOG_HEIGHT),
+                Location = new Point(_canvas.Left + LOG_X, _canvasLayer.Bottom + LOG_Y),
+                Size = new Size(_canvasLayer.ClientSize.Width - LOG_WIDTH, _canvasLayer.ClientSize.Height - LOG_HEIGHT),
                 ShadowDecoration = { Parent = _logPanel }
             };
 
             _logListBox = new ListBox
             {
                 Location = new Point(5, 5), // 패널 내부 여백
-                Size = new Size(LOG_WIDTH - 10, LOG_HEIGHT - 10), // 패널 크기보다 작게
+                Size = new Size(_canvasLayer.ClientSize.Width - LOG_WIDTH - 10, _canvasLayer.ClientSize.Height - LOG_HEIGHT - 10), // 패널 크기보다 작게
                 BorderStyle = BorderStyle.None,
                 Font = new Font("Segoe UI", 9f, FontStyle.Regular),
                 BackColor = Color.White,
@@ -1315,7 +1300,7 @@ namespace SmartLabelingApp
         {
             _canvas.ClearInferenceOverlays();
             _canvas.Invalidate();
-            
+
             try { NavigateImage(-1); } catch { }
             await AutoInferIfEnabledAsync();
             _canvas?.Focus();
@@ -3442,9 +3427,8 @@ namespace SmartLabelingApp
                 _currentImagePath = path;
                 if (!_canvas.Focused) _canvas.Focus();
                 _canvasLayer.Invalidate();
-                _yoloLoadedForCurrentImage = false;
                 TryBindAnnotationRootNear(Path.GetDirectoryName(_currentImagePath));
-                _yoloLoadedForCurrentImage = TryLoadYoloForCurrentImage();
+                TryLoadYoloForCurrentImage();
 
                 if (_aiSubMode == AiSubMode.Roi)
                 {
@@ -3964,7 +3948,7 @@ namespace SmartLabelingApp
                     {
                         // ---------------- ONNX 경로 ----------------
                         var res = SegmentationInfer.InferOnnx(_onnxSession, srcCopy);
-                        
+
                         var swOverlay = System.Diagnostics.Stopwatch.StartNew();
                         // 공통 오버레이: ONNX 스타일의 그림을 두 백엔드 공통으로
                         onnxOverlay = OverlayRendererFast.RenderEx(srcCopy, res, overlaysOut: overlays);

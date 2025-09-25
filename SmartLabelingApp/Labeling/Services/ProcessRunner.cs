@@ -173,19 +173,15 @@ namespace SmartLabelingApp
     {
         internal static bool CanUseCudaForKernels(string pythonExe, string workingDir)
         {
+            // exit codes: 0 = cuda usable, 2 = torch installed but no cuda, 1 = torch not installed, 3 = unexpected error
+            // 주의: -c 원라이너에서 try:는 문법적으로 불가 → 예외 없이 분기 처리
             string cmd =
-                "-c \"import sys;" +
-                "try:\n" +
-                " import torch\n" +
-                " ok = torch.cuda.is_available()\n" +
-                " if ok:\n" +
-                "  a=torch.tensor([1], device='cuda'); torch.cuda.synchronize()\n" +
-                " sys.exit(0 if ok else 2)\n" +
-                "except Exception:\n" +
-                " sys.exit(3)\"";
+                "-c \"import sys; import importlib, importlib.util; " +
+                "m=importlib.util.find_spec('torch'); " +
+                "t=importlib.import_module('torch') if m else None; " +
+                "sys.exit(0 if (t and hasattr(t,'cuda') and t.cuda.is_available()) else (2 if m else 1))\"";
 
             int code = ProcessRunner.RunProcess(pythonExe, cmd, workingDir);
-            // 0: cuda ok, 2: cuda unavailable, 3: runtime error (커널 불일치 등)
             return code == 0;
         }
         internal static bool HasNvidiaGpu()
