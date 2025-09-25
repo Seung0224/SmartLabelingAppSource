@@ -1,7 +1,6 @@
 ﻿using Guna.UI2.WinForms;
 using Guna.UI2.WinForms.Enums;
 using Microsoft.ML.OnnxRuntime;
-using Microsoft.WindowsAPICodePack.Dialogs;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -1977,22 +1976,18 @@ namespace SmartLabelingApp
                 if (_canvas != null && !_canvas.Focused) _canvas.Focus();
             }
         }
+
         private string PickAnnotationDataFolderWithCommonDialog(string initialDir = null)
         {
-            using (var dlg = new CommonOpenFileDialog())
+            using (var dlg = new FolderBrowserDialog())
             {
-                dlg.Title = "AnnotationData 폴더를 선택하세요";
-                dlg.IsFolderPicker = true;
-                dlg.Multiselect = false;
-                dlg.EnsurePathExists = true;
-                dlg.AllowNonFileSystemItems = false;
+                dlg.Description = "AnnotationData 폴더를 선택하세요";
                 if (!string.IsNullOrEmpty(initialDir) && Directory.Exists(initialDir))
-                    dlg.InitialDirectory = initialDir;
+                    dlg.SelectedPath = initialDir;
 
-                var ret = dlg.ShowDialog();
-                if (ret != CommonFileDialogResult.Ok) return null;
+                if (dlg.ShowDialog(this) != DialogResult.OK) return null;
 
-                var di = new DirectoryInfo(dlg.FileName);
+                var di = new DirectoryInfo(dlg.SelectedPath);
                 if (!di.Name.Equals("AnnotationData", StringComparison.OrdinalIgnoreCase))
                 {
                     MessageBox.Show(this, "선택한 폴더의 이름이 'AnnotationData'가 아닙니다.",
@@ -2001,49 +1996,6 @@ namespace SmartLabelingApp
                 }
                 return di.FullName;
             }
-        }
-
-        private string PickAnnotationDataFolderWithDoubleClick(string expectedAnnotationDataPath = null)
-        {
-
-            string initial = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-            if (!string.IsNullOrEmpty(expectedAnnotationDataPath) && Directory.Exists(expectedAnnotationDataPath))
-            {
-                var parent = Directory.GetParent(expectedAnnotationDataPath);
-                if (parent != null && parent.Exists)
-                    initial = parent.FullName;
-            }
-
-            using (var fbd = new FolderBrowserDialog())
-            {
-                fbd.Description = "AnnotationData 폴더를 선택하세요 (더블클릭으로 바로 선택 가능)";
-                fbd.SelectedPath = initial;
-
-
-                if (fbd.ShowDialog(this) == DialogResult.OK)
-                {
-
-
-                    string chosen = fbd.SelectedPath;
-                    string candidate = Path.Combine(chosen, "AnnotationData");
-                    if (!chosen.EndsWith("AnnotationData", StringComparison.OrdinalIgnoreCase) && Directory.Exists(candidate))
-                        return candidate;
-
-                    return chosen;
-                }
-            }
-            return null;
-        }
-
-        private IEnumerable<string> EnumerateAllImagePathsFromTree()
-        {
-            var list = new List<string>();
-            if (_fileTree != null)
-            {
-                foreach (TreeNode n in _fileTree.Nodes)
-                    CollectImagePathsRecursive(n, list);
-            }
-            return list;
         }
 
         private string GetSelectedImagePathFromTree()
@@ -4133,7 +4085,7 @@ namespace SmartLabelingApp
                 zipPath = ofd.FileName;
             }
 
-            using (var overlay = new ProgressOverlay(this, "환경 준비", true))
+            using (var overlay = new ProgressOverlay(this, "환경 준비 (10 ~ 20분 정도 소요됩니다)", true))
             {
                 try
                 {
@@ -4255,7 +4207,11 @@ namespace SmartLabelingApp
                     overlay2.Report(0, "YOLO 준비 중...");
                     var cli = YoloCli.GetYoloCli(yoloExe, pythonExe);
 
-                    int exit = await YoloTrainer.RunYoloTrainWithEpochProgressAsync(cli.fileName, cli.argumentsPrefix + " " + args, baseDir, (pct, status) => overlay2.Report(pct, status), 0, 96);
+                    int exit = await YoloTrainer.RunYoloTrainWithEpochProgressAsync(
+                        cli.fileName, cli.argumentsPrefix + " " + args, baseDir,
+                        (pct, status) => overlay2.Report(pct, status),
+                        0, 96, expectedTotalEpochs: epochs);
+
                     if (exit != 0)
                         throw new Exception($"YOLO 학습 프로세스가 실패했습니다. (exit={exit})");
 

@@ -35,6 +35,72 @@ namespace SmartLabelingApp
             }
         }
 
+        internal static int RunProcessProgressPercentAware(
+    string fileName,
+    string arguments,
+    string workingDirectory,
+    int startPct,
+    int endPct,
+    Action<int, string> progress,
+    string phaseLabel,
+    IDictionary<string, string> extraEnv = null)
+        {
+            if (endPct < startPct) endPct = startPct;
+            int current = Math.Max(0, Math.Min(99, startPct));
+            int upper = Math.Max(current, Math.Min(100, endPct));
+
+            var psi = CreatePsi(fileName, arguments, workingDirectory);
+            if (extraEnv != null)
+                foreach (var kv in extraEnv) psi.EnvironmentVariables[kv.Key] = kv.Value;
+
+            var rxPercent = new System.Text.RegularExpressions.Regex(@"\b(\d{1,3})\s?%\b",
+                System.Text.RegularExpressions.RegexOptions.Compiled);
+            var sw = Stopwatch.StartNew();
+            long lastOutputMs = 0;
+            int lastReported = current;
+
+            using (var p = Process.Start(psi))
+            {
+                p.OutputDataReceived += (s, e) =>
+                {
+                    if (e.Data == null) return;
+                    Trace.WriteLine(e.Data);
+                    lastOutputMs = sw.ElapsedMilliseconds;
+
+                    var m = rxPercent.Match(e.Data);
+                    if (m.Success && int.TryParse(m.Groups[1].Value, out int pct))
+                    {
+                        pct = Math.Max(0, Math.Min(100, pct));
+                        int mapped = startPct + (int)Math.Round((pct / 100.0) * (endPct - startPct));
+                        if (mapped > lastReported)
+                        {
+                            lastReported = mapped;
+                            progress?.Invoke(mapped, phaseLabel + $"... {pct}%");
+                        }
+                    }
+                };
+                p.ErrorDataReceived += (s, e) => { if (e.Data != null) Trace.WriteLine(e.Data); };
+
+                p.BeginOutputReadLine();
+                p.BeginErrorReadLine();
+
+                // 하트비트: 무출력 1.5초 이상이면 1%씩 상향(upper-1 한도)
+                while (!p.WaitForExit(100))
+                {
+                    if (sw.ElapsedMilliseconds - lastOutputMs > 1500 && lastReported < upper - 1)
+                    {
+                        lastReported++;
+                        progress?.Invoke(lastReported, phaseLabel + "...");
+                        lastOutputMs = sw.ElapsedMilliseconds;
+                    }
+                }
+
+                progress?.Invoke(upper, phaseLabel + " 완료");
+                return p.ExitCode;
+            }
+        }
+
+
         internal static int RunProcess(string fileName, string arguments, string workingDirectory,
                                        IDictionary<string, string> extraEnv)
         {
@@ -296,11 +362,13 @@ namespace SmartLabelingApp
                 if (needCreate)
                 {
                     progress?.Invoke(5, "venv 생성...");
-                    int code = ProcessRunner.RunProcessProgress("py", "-3 -m venv .venv", baseDir, 5, 35, progress, "venv 생성(py -3)", null);
+                    int code = ProcessRunner.RunProcessProgress("py", "-3 -m venv .venv",
+                        baseDir, 5, 35, progress, "venv 생성(py -3)", null);
                     if (code != 0)
                     {
                         Trace.WriteLine("[VENV] 'py -3' 실패, 'python'으로 재시도");
-                        code = ProcessRunner.RunProcessProgress("python", "-m venv .venv", baseDir, 5, 35, progress, "venv 생성(python)", null);
+                        code = ProcessRunner.RunProcessProgress("python", "-m venv .venv",
+                            baseDir, 5, 35, progress, "venv 생성(python)", null);
                         if (code != 0) throw new Exception("venv 생성 실패. Python 3가 PATH에 있는지 확인하세요.");
                     }
                 }
@@ -312,6 +380,7 @@ namespace SmartLabelingApp
 
                 var pipEnv = GetPipEnv(baseDir);
 
+                // pip 업그레이드 (기존 유지)
                 int ec = ProcessRunner.RunProcessProgress(
                     pythonExe,
                     "-m pip install --upgrade pip --timeout 120 --retries 2",
@@ -335,30 +404,40 @@ namespace SmartLabelingApp
                     progress?.Invoke(28, "디스크 용량 확인...");
                     DiskUtils.EnsureDiskSpaceOrThrow(baseDir, pipEnv, wantCuda);
 
+                    // 제거 & 캐시정리는 빠르게
                     progress?.Invoke(30, "기존 PyTorch 제거...");
                     ProcessRunner.RunProcessProgress(pythonExe, "-m pip uninstall -y torch torchvision torchaudio",
-                                                    baseDir, 30, 32, progress, "PyTorch 제거", pipEnv);
+                        baseDir, 30, 32, progress, "PyTorch 제거", pipEnv);
+
                     progress?.Invoke(32, "pip 캐시 정리...");
                     ProcessRunner.RunProcessProgress(pythonExe, "-m pip cache purge",
-                                                    baseDir, 32, 34, progress, "pip 캐시 정리", pipEnv);
+                        baseDir, 32, 34, progress, "pip 캐시 정리", pipEnv);
 
-                    if (wantCuda)
-                    {
-                        string cmd = "-m pip install --upgrade --force-reinstall --no-cache-dir --prefer-binary " +
-                                     "--index-url https://download.pytorch.org/whl/cu121 torch torchvision " +
-                                     "--timeout 300 --retries 2";
-                        ec = ProcessRunner.RunProcessProgress(pythonExe, cmd, baseDir, 34, 62, progress, "PyTorch(CUDA) 설치", pipEnv);
-                        if (ec != 0) throw new Exception("PyTorch(CUDA) 설치 실패");
-                    }
-                    else
-                    {
-                        string cmd = "-m pip install --upgrade --force-reinstall --no-cache-dir --prefer-binary " +
-                                     "torch torchvision --timeout 300 --retries 2";
-                        ec = ProcessRunner.RunProcessProgress(pythonExe, cmd, baseDir, 34, 62, progress, "PyTorch(CPU) 설치", pipEnv);
-                        if (ec != 0) throw new Exception("PyTorch(CPU) 설치 실패");
-                    }
+                    // 1) 공통 경량 의존성 먼저 (분할 설치)
+                    string commonPkgs = "mpmath typing-extensions sympy pillow numpy networkx MarkupSafe fsspec filelock jinja2";
+                    ec = ProcessRunner.RunProcessProgressPercentAware(
+                        pythonExe,
+                        $"-m pip install --upgrade --no-cache-dir --prefer-binary {commonPkgs} --timeout 300 --retries 2 -v",
+                        baseDir, 34, 40, progress, "기본 의존성 설치", pipEnv);
+                    if (ec != 0) throw new Exception("기본 의존성 설치 실패");
+
+                    // 2) torch (대형 wheel → % 파싱)
+                    string torchIdx = wantCuda ? "--index-url https://download.pytorch.org/whl/cu121" : "";
+                    ec = ProcessRunner.RunProcessProgressPercentAware(
+                        pythonExe,
+                        $"-m pip install --upgrade --force-reinstall --no-cache-dir --prefer-binary {torchIdx} torch --timeout 900 --retries 2 -v",
+                        baseDir, 40, 58, progress, "PyTorch 설치(torch)", pipEnv);
+                    if (ec != 0) throw new Exception("PyTorch(torch) 설치 실패");
+
+                    // 3) torchvision (대형 wheel → % 파싱)
+                    ec = ProcessRunner.RunProcessProgressPercentAware(
+                        pythonExe,
+                        $"-m pip install --upgrade --force-reinstall --no-cache-dir --prefer-binary {torchIdx} torchvision --timeout 900 --retries 2 -v",
+                        baseDir, 58, 62, progress, "PyTorch 설치(torchvision)", pipEnv);
+                    if (ec != 0) throw new Exception("PyTorch(torchvision) 설치 실패");
                 }
 
+                // Ultralytics
                 progress?.Invoke(64, "Ultralytics 상태 점검...");
                 bool hasUltralytics = TorchInspector.IsUltralyticsInstalled(pythonExe, baseDir);
 
@@ -369,21 +448,28 @@ namespace SmartLabelingApp
                 else
                 {
                     progress?.Invoke(70, "Ultralytics 설치...");
-                    string ultraCmd1 = "-m pip install --upgrade --no-cache-dir --prefer-binary ultralytics " +
-                                       "--extra-index-url https://download.pytorch.org/whl/cu121 " +
-                                       "--timeout 300 --retries 2";
-                    ec = ProcessRunner.RunProcessProgress(pythonExe, ultraCmd1, baseDir, 70, 90, progress, "ultralytics 설치", pipEnv);
+                    string ultraCmd1 =
+                        "-m pip install --upgrade --no-cache-dir --prefer-binary ultralytics " +
+                        "--extra-index-url https://download.pytorch.org/whl/cu121 " +
+                        "--timeout 600 --retries 2 -v";
+
+                    ec = ProcessRunner.RunProcessProgressPercentAware(
+                        pythonExe, ultraCmd1, baseDir, 70, 88, progress, "ultralytics 설치", pipEnv);
 
                     if (ec != 0)
                     {
-                        progress?.Invoke(90, "pip 캐시 정리...");
-                        ProcessRunner.RunProcessProgress(pythonExe, "-m pip cache purge", baseDir, 90, 92, progress, "pip 캐시 정리", pipEnv);
+                        progress?.Invoke(88, "pip 캐시 정리...");
+                        ProcessRunner.RunProcessProgress(
+                            pythonExe, "-m pip cache purge", baseDir, 88, 90, progress, "pip 캐시 정리", pipEnv);
 
-                        progress?.Invoke(92, "ultralytics 재시도(상세 로그)...");
-                        string ultraCmd2 = "-m pip install -vvv --no-cache-dir --prefer-binary ultralytics==8.3.190 " +
-                                           "--extra-index-url https://download.pytorch.org/whl/cu121 " +
-                                           "--timeout 600 --retries 1";
-                        ec = ProcessRunner.RunProcessProgress(pythonExe, ultraCmd2, baseDir, 92, 95, progress, "ultralytics 재시도", pipEnv);
+                        progress?.Invoke(90, "ultralytics 재시도(상세 로그)...");
+                        string ultraCmd2 =
+                            "-m pip install -vvv --no-cache-dir --prefer-binary ultralytics==8.3.190 " +
+                            "--extra-index-url https://download.pytorch.org/whl/cu121 " +
+                            "--timeout 900 --retries 1";
+                        ec = ProcessRunner.RunProcessProgressPercentAware(
+                            pythonExe, ultraCmd2, baseDir, 90, 95, progress, "ultralytics 재시도", pipEnv);
+
                         if (ec != 0)
                         {
                             Trace.WriteLine("[INSTALL] Ultralytics 설치가 최종 실패했습니다. 위의 pip -vvv 로그를 확인하세요.");
@@ -412,6 +498,7 @@ namespace SmartLabelingApp
         }
     }
 
+
     // =====================
     // YOLO CLI small utils
     // =====================
@@ -437,23 +524,26 @@ namespace SmartLabelingApp
     internal static class YoloTrainer
     {
         internal static Task<int> RunYoloTrainWithEpochProgressAsync(
-        string fileName,
-        string arguments,
-        string workingDirectory,
-        Action<int, string> progress,
-        int startPct,
-        int endPct)
+            string fileName,
+            string arguments,
+            string workingDirectory,
+            Action<int, string> progress,
+            int startPct,
+            int endPct,
+            int? expectedTotalEpochs = null)
         {
             return Task.Run(() =>
             {
                 if (endPct < startPct) endPct = startPct;
                 int lastReportedPct = Math.Max(0, startPct);
-                int totalEpochs = 0;
                 int lastEpoch = 0;
 
-                // Epoch 라인 패턴: "Epoch 3/100", "epoch 12/50", "  12/50" 등도 대응
-                var rxEpoch = new Regex(@"\b(?:epoch\s*)?(\d+)\s*/\s*(\d+)\b",
-                                        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+                // Epoch 라인만 인정: "Epoch 3/20", "epoch: 3/20", "Epoch (3/20)" 등
+                var rxEpoch1 = new Regex(@"\b[Ee]poch\s+(\d+)\s*/\s*(\d+)\b", RegexOptions.Compiled);
+                var rxEpoch2 = new Regex(@"\b[Ee]poch\s*:\s*(\d+)\s*/\s*(\d+)\b", RegexOptions.Compiled);
+                var rxEpoch3 = new Regex(@"\b[Ee]poch\s*\(\s*(\d+)\s*/\s*(\d+)\s*\)", RegexOptions.Compiled);
+
+                int totalEpochs = expectedTotalEpochs.GetValueOrDefault(0);
 
                 var psi = new ProcessStartInfo
                 {
@@ -466,51 +556,81 @@ namespace SmartLabelingApp
                     CreateNoWindow = true
                 };
 
+                var sw = Stopwatch.StartNew();
+                long lastOutputMs = 0;
+
                 using (var p = Process.Start(psi))
                 {
                     p.OutputDataReceived += (s, e) =>
                     {
                         if (e.Data == null) return;
                         Trace.WriteLine(e.Data);
+                        lastOutputMs = sw.ElapsedMilliseconds;
 
-                        var m = rxEpoch.Match(e.Data);
-                        if (!m.Success) return;
+                        Match m = rxEpoch1.Match(e.Data);
+                        if (!m.Success) m = rxEpoch2.Match(e.Data);
+                        if (!m.Success) m = rxEpoch3.Match(e.Data);
+                        if (!m.Success) return; // 배치 tqdm(예: "12/1000")는 'Epoch'가 없으므로 무시
 
-                        // 에폭 파싱
                         if (!int.TryParse(m.Groups[1].Value, out int cur)) return;
-                        if (!int.TryParse(m.Groups[2].Value, out int tot)) return;
-                        if (tot <= 0) return;
+                        if (!int.TryParse(m.Groups[2].Value, out int totFromLog)) return;
 
-                        totalEpochs = tot;
-                        if (cur > lastEpoch) lastEpoch = cur;
+                        // 총 에폭 결정: expected가 있으면 그것을 상한으로 사용
+                        int tot = totalEpochs > 0 ? totalEpochs : Math.Max(totFromLog, 1);
 
-                        // 에폭 기반 선형 매핑
-                        double frac = Math.Min(1.0, Math.Max(0.0, (double)lastEpoch / totalEpochs));
+                        // 로그 값이 비정상(너무 크거나 작음)일 땐 expected로 교정
+                        if (totalEpochs > 0)
+                        {
+                            if (totFromLog > totalEpochs * 2 || totFromLog < Math.Max(1, totalEpochs / 2))
+                                tot = totalEpochs;
+                            else
+                                tot = totalEpochs; // expected 존재 시 그대로 사용
+                        }
+                        else
+                        {
+                            totalEpochs = tot;
+                        }
+
+                        cur = Math.Max(0, Math.Min(cur, tot));
+                        if (cur <= lastEpoch) return; // 되돌림 방지
+                        lastEpoch = cur;
+
+                        double frac = Math.Min(1.0, Math.Max(0.0, (double)lastEpoch / tot));
                         int pct = startPct + (int)Math.Round(frac * (endPct - startPct));
 
                         if (pct > lastReportedPct)
                         {
                             lastReportedPct = pct;
-                            progress?.Invoke(pct, $"학습 중... epoch {lastEpoch}/{totalEpochs}");
+                            string msg = $"학습 중... epoch {lastEpoch}/{tot} ({(int)(frac * 100)}%)";
+                            progress?.Invoke(pct, msg);
                         }
                     };
 
-                    p.ErrorDataReceived += (s, e) =>
-                    {
-                        if (e.Data != null) Trace.WriteLine(e.Data);
-                    };
+                    p.ErrorDataReceived += (s, e) => { if (e.Data != null) Trace.WriteLine(e.Data); };
 
                     p.BeginOutputReadLine();
                     p.BeginErrorReadLine();
-                    p.WaitForExit();
 
-                    // 프로세스 끝났으면 “마무리” 안내만(퍼센트는 여기서 추가로 올리지 않음)
-                    progress?.Invoke(lastReportedPct, "마무리...");
+                    // 하트비트: 무출력 1.5초 이상 → endPct-1 까지만 미세 증가
+                    while (!p.WaitForExit(100))
+                    {
+                        if (sw.ElapsedMilliseconds - lastOutputMs > 1500 && lastReportedPct < endPct - 1)
+                        {
+                            lastReportedPct++;
+                            progress?.Invoke(lastReportedPct, "학습 진행 중...");
+                            lastOutputMs = sw.ElapsedMilliseconds;
+                        }
+                    }
+
+                    progress?.Invoke(endPct, "학습 단계 종료");
                     return p.ExitCode;
                 }
             });
         }
     }
+
+
+
 
     // ==================
     // ZIP extract utils

@@ -52,16 +52,16 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="DeepLearning\Segmentation\Contracts\Det.cs" />
-    <Compile Include="DeepLearning\Segmentation\Contracts\SegResult.cs" />
-    <Compile Include="DeepLearning\Segmentation\Core\MaskSynth.cs" />
-    <Compile Include="DeepLearning\Segmentation\Core\MathUtils.cs" />
-    <Compile Include="DeepLearning\Segmentation\Core\Postprocess.cs" />
-    <Compile Include="DeepLearning\Segmentation\Core\Preprocess.cs" />
-    <Compile Include="DeepLearning\Segmentation\Core\ProtoUtils.cs" />
-    <Compile Include="DeepLearning\Segmentation\Core\SegmentationInfer.cs" />
-    <Compile Include="DeepLearning\Segmentation\Overlay\ColorUtils.cs" />
-    <Compile Include="DeepLearning\Segmentation\Overlay\OverlayRendererFast.cs" />
+    <Compile Include="DeepLearningTasks\Segmentation\Contracts\Det.cs" />
+    <Compile Include="DeepLearningTasks\Segmentation\Contracts\SegResult.cs" />
+    <Compile Include="DeepLearningTasks\Segmentation\Core\MaskSynth.cs" />
+    <Compile Include="DeepLearningTasks\Segmentation\Core\MathUtils.cs" />
+    <Compile Include="DeepLearningTasks\Segmentation\Core\Postprocess.cs" />
+    <Compile Include="DeepLearningTasks\Segmentation\Core\Preprocess.cs" />
+    <Compile Include="DeepLearningTasks\Segmentation\Core\ProtoUtils.cs" />
+    <Compile Include="DeepLearningTasks\Segmentation\Core\SegmentationInfer.cs" />
+    <Compile Include="DeepLearningTasks\Segmentation\Overlay\ColorUtils.cs" />
+    <Compile Include="DeepLearningTasks\Segmentation\Overlay\OverlayRendererFast.cs" />
     <Compile Include="Labeling\AI\AIInterfcae.cs" />
     <Compile Include="Labeling\AI\AISegmenterOpenCV.cs" />
     <Compile Include="Labeling\AI\AITool.cs" />
@@ -74,7 +74,7 @@
     <Compile Include="Labeling\Canvas\ExportSplitDialog.cs">
       <SubType>Form</SubType>
     </Compile>
-    <Compile Include="Labeling\Canvas\ImageCanvas.cs">
+    <Compile Include="Labeling\ImageCanvas.cs">
       <SubType>Component</SubType>
     </Compile>
     <Compile Include="Labeling\Canvas\InferResultDialog.cs">
@@ -88,7 +88,7 @@
     </Compile>
     <Compile Include="Labeling\Canvas\ProgressBarOverlay.cs" />
     <Compile Include="Labeling\Services\LabelStatusService.cs" />
-    <Compile Include="Labeling\Services\ProcessRunner.cs" />
+    <Compile Include="DeepLearningTrain\ProcessRunner.cs" />
     <Compile Include="Labeling\Shapes\BrushStrokeShape.cs" />
     <Compile Include="Labeling\Shapes\CircleShape.cs" />
     <Compile Include="Labeling\Shapes\EditorUIConfig.cs" />
@@ -102,8 +102,8 @@
     <Compile Include="Labeling\Tools\EraserTool.cs" />
     <Compile Include="Labeling\Tools\MaskTool.cs" />
     <Compile Include="Labeling\Util\PathBoolean.cs" />
-    <Compile Include="DeepLearning\Segmentation\YoloSegEngine.cs" />
-    <Compile Include="DeepLearning\Segmentation\YoloSegOnnx.cs" />
+    <Compile Include="DeepLearningTasks\Segmentation\YoloSegEngine.cs" />
+    <Compile Include="DeepLearningTasks\Segmentation\YoloSegOnnx.cs" />
     <Compile Include="MainForm.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -162,9 +162,6 @@
     </PackageReference>
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu">
       <Version>1.22.1</Version>
-    </PackageReference>
-    <PackageReference Include="Microsoft.WindowsAPICodePack.Shell">
-      <Version>1.1.0</Version>
     </PackageReference>
     <PackageReference Include="OpenCvSharp4">
       <Version>4.11.0.20250507</Version>
