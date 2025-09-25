@@ -50,6 +50,16 @@ namespace SmartLabelingApp.AI
         // -------- 알고리즘 특화(필요 시 무시 가능) --------
         /// <summary>GrabCut 전용: 반복 횟수(1~5 권장)</summary>
         public int GrabCutIters { get; set; } = 2;
+
+        // ===== Color Gate (선택적) =====
+        public bool UseColorGate { get; set; } = false;
+        public Color GateColor { get; set; } = Color.FromArgb(30, 40, 70);
+        public int GateTolerance { get; set; } = 28;   // 0~255 (Lab/HSV 거리 임계)
+        public bool GateAsForeground { get; set; } = true;
+
+        public enum GateSpace { Lab, Hsv }
+
+        public GateSpace GateColorSpace { get; set; } = GateSpace.Lab;
     }
 
     /// <summary>

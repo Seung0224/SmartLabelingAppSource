@@ -77,23 +77,19 @@ namespace SmartLabelingApp.AI
                 using (var bgd = new Mat())
                 using (var fgd = new Mat())
                 {
-                    // ---- 초기화 ----
-                    if (prompt.Kind == PromptKind.Box)
-                    {
-                        var rect = ClampRectToImage(prompt.Box ?? RectangleF.Empty, w, h);
-                        // 로컬 좌표로 변환
-                        var rLocal = new Rect(
-                            (int)Math.Round(rect.X) - roi.X,
-                            (int)Math.Round(rect.Y) - roi.Y,
-                            (int)Math.Round(rect.Width),
-                            (int)Math.Round(rect.Height));
-                        rLocal = ClampRectToRoi(rLocal, srcRoi.Cols, srcRoi.Rows);
+                    // ---- 초기화 (딱 한 번만) ----
+                    bool usedMaskInit = false;
 
-                        Cv2.GrabCut(srcRoi, maskRoi, rLocal, bgd, fgd, Math.Max(1, options.GrabCutIters), GrabCutModes.InitWithRect);
-                    }
-                    else // Points
+                    // (1) Color Gate가 켜져 있으면 먼저 씨앗을 마스크에 채움 → InitWithMask
+                    if (options.UseColorGate)
                     {
-                        // 전경/배경 씨앗(로컬좌표) 마스크에 그리기
+                        ApplyColorGateSeeds(srcRoi, maskRoi, options);
+                        usedMaskInit = true;
+                    }
+
+                    // (2) 포인트 프롬프트면 점 씨앗 추가 → InitWithMask
+                    if (prompt.Kind == PromptKind.Points && prompt.Points != null && prompt.Points.Count > 0)
+                    {
                         foreach (var pt in prompt.Points)
                         {
                             var pAbs = ClampPoint(pt.Point, w, h);
@@ -104,8 +100,31 @@ namespace SmartLabelingApp.AI
                             int radius = Math.Max(1, (int)Math.Round(Math.Min(roi.Width, roi.Height) * 0.01)); // ROI 기준 1%
                             Cv2.Circle(maskRoi, p, radius, new Scalar(val), thickness: -1);
                         }
+                        usedMaskInit = true;
+                    }
 
-                        Cv2.GrabCut(srcRoi, maskRoi, new Rect(), bgd, fgd, Math.Max(1, options.GrabCutIters), GrabCutModes.InitWithMask);
+                    // (3) GrabCut 실행
+                    if (!usedMaskInit && prompt.Kind == PromptKind.Box)
+                    {
+                        // Rect 기반 초기화 (ColorGate OFF & Points 아님)
+                        var rect = ClampRectToImage(prompt.Box ?? RectangleF.Empty, w, h);
+                        var rLocal = new Rect(
+                            (int)Math.Round(rect.X) - roi.X,
+                            (int)Math.Round(rect.Y) - roi.Y,
+                            (int)Math.Round(rect.Width),
+                            (int)Math.Round(rect.Height));
+                        rLocal = ClampRectToRoi(rLocal, srcRoi.Cols, srcRoi.Rows);
+
+                        Cv2.GrabCut(srcRoi, maskRoi, rLocal, bgd, fgd,
+                                    Math.Max(1, options.GrabCutIters),
+                                    GrabCutModes.InitWithRect);
+                    }
+                    else
+                    {
+                        // ColorGate 또는 Points가 개입된 경우 → 마스크 기반 초기화
+                        Cv2.GrabCut(srcRoi, maskRoi, new Rect(), bgd, fgd,
+                                    Math.Max(1, options.GrabCutIters),
+                                    GrabCutModes.InitWithMask);
                     }
 
                     // ---- 2) FGD 바이너리 ----
@@ -162,6 +181,7 @@ namespace SmartLabelingApp.AI
             }
         }
 
+
         // ---------- 유틸 ----------
         private static Mat EnsureBgr8UC3(Mat m)
         {
@@ -199,6 +219,53 @@ namespace SmartLabelingApp.AI
             tmp8.Dispose();
             return outMat;
         }
+
+        // === ADD: 색 기반 씨앗 생성 ===
+        private static void ApplyColorGateSeeds(Mat srcRoiBgr, Mat maskRoi, AISegmenterOptions opt)
+        {
+            if (srcRoiBgr == null || maskRoi == null || opt == null) return;
+            if (!opt.UseColorGate) return;
+
+            // 1) 색공간 변환
+            var conv = new Mat();
+            if (opt.GateColorSpace == AISegmenterOptions.GateSpace.Lab)
+                Cv2.CvtColor(srcRoiBgr, conv, ColorConversionCodes.BGR2Lab);
+            else
+                Cv2.CvtColor(srcRoiBgr, conv, ColorConversionCodes.BGR2HSV);
+
+            // 2) 타겟색을 같은 공간으로 변환
+            var one = new Mat(1, 1, MatType.CV_8UC3, new Scalar(opt.GateColor.B, opt.GateColor.G, opt.GateColor.R));
+            var one2 = new Mat();
+            if (opt.GateColorSpace == AISegmenterOptions.GateSpace.Lab)
+                Cv2.CvtColor(one, one2, ColorConversionCodes.BGR2Lab);
+            else
+                Cv2.CvtColor(one, one2, ColorConversionCodes.BGR2HSV);
+            var tv = one2.Get<Vec3b>(0, 0);
+            var tgt = new Scalar(tv.Item0, tv.Item1, tv.Item2);
+
+            // 3) 거리맵 (채널 L1 합)
+            var ch = conv.Split();
+            var a0 = new Mat(); var a1 = new Mat(); var a2 = new Mat();
+            Cv2.Absdiff(ch[0], new Scalar(tgt.Val0), a0);
+            Cv2.Absdiff(ch[1], new Scalar(tgt.Val1), a1);
+            Cv2.Absdiff(ch[2], new Scalar(tgt.Val2), a2);
+            var sum = new Mat();
+            Cv2.Add(a0, a1, sum);
+            Cv2.Add(sum, a2, sum);
+
+            // 4) 임계값으로 근접/원거리 분리
+            var near = new Mat(); var far = new Mat();
+            Cv2.Threshold(sum, near, opt.GateTolerance, 255, ThresholdTypes.BinaryInv); // 가까움=255
+            Cv2.Threshold(sum, far, opt.GateTolerance, 255, ThresholdTypes.Binary);   // 멂=255
+
+            // 5) 마스크 라벨 적용
+            byte fgVal = opt.GateAsForeground ? (byte)GrabCutClasses.FGD : (byte)GrabCutClasses.PR_FGD;
+            byte bgVal = opt.GateAsForeground ? (byte)GrabCutClasses.BGD : (byte)GrabCutClasses.PR_BGD;
+
+            maskRoi.SetTo(fgVal, near);
+            maskRoi.SetTo(bgVal, far);
+        }
+
 
         private static RectangleF ClampRectToImage(RectangleF r, int w, int h)
         {

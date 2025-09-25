@@ -17,6 +17,23 @@ namespace SmartLabelingApp
     /// </summary>
     public sealed class AITool : ITool
     {
+        // === ADD: 프리셋/게이트 상태 ===
+        private enum RetunePreset { Conservative = 0, Balanced = 1, Aggressive = 2 }
+        private RetunePreset _preset = RetunePreset.Balanced;
+
+        private Rectangle _retuneBtnScr;          // ↻ 버튼 화면좌표
+        private readonly int BtnSize = 18;        // (기존 상수와 일치)
+        private readonly int BtnGap = 6;
+
+        private bool _gateAsForeground = true;
+        private AISegmenterOptions.GateSpace _gateSpace = AISegmenterOptions.GateSpace.Lab;
+        private int _gateClusterIndex = 0;
+        private List<Color> _gatePalette = null;  // KMeans로 구한 ROI 색상 클러스터
+
+        // 마지막 프롬프트(같은 영역 재세그 용)
+        private AISegmenterPrompt _lastPrompt = null;
+
+
         private volatile bool _aiBusy;
         private readonly IAISegmenter _segmenter;
         private readonly AISegmenterOptions _opts = new AISegmenterOptions();
@@ -32,8 +49,6 @@ namespace SmartLabelingApp
         private List<List<PointF>> _previewPolys;    // null when no preview
         private RectangleF _previewUnionBoundsImg;   // union bounds of preview polygons
         private Rectangle _okBtnScr, _cancelBtnScr;  // last-drawn screen rects for buttons
-        private const int BtnSize = 18;
-        private const int BtnGap = 6;
         private int _previewVertexCount = 48; // 기본값 (각 폴리곤 리샘플 상한)
         public bool HasActiveRoi => _roiMode && !_roiRectImg.IsEmpty;
 
@@ -43,6 +58,194 @@ namespace SmartLabelingApp
             if (k > 256) k = 256;      // 안전 상한
             _previewVertexCount = k;
         }
+        // === ADD: 프리셋 값 적용 ===
+        private void ApplyPresetValues(AISegmenterOptions opt, RetunePreset p)
+        {
+            if (opt == null) return;
+
+            switch (p)
+            {
+                case RetunePreset.Conservative:
+                    opt.MinAreaPx = 240;   // 큰 조각 위주
+                    opt.CloseKernel = 7;   // 매끈하게/구멍메움
+                    opt.ApproxEpsilon = 2.6;
+                    opt.GrabCutIters = 3;
+                    opt.GateTolerance = 20; // 색 범위 좁게
+                    break;
+
+                case RetunePreset.Balanced:
+                    opt.MinAreaPx = 120;
+                    opt.CloseKernel = 5;
+                    opt.ApproxEpsilon = 2.0;
+                    opt.GrabCutIters = 2;
+                    opt.GateTolerance = 30;
+                    break;
+
+                case RetunePreset.Aggressive:
+                    opt.MinAreaPx = 40;    // 작은 조각 허용
+                    opt.CloseKernel = 3;   // 덜 메움
+                    opt.ApproxEpsilon = 1.2;
+                    opt.GrabCutIters = 1;
+                    opt.GateTolerance = 38; // 색 범위 넓게
+                    break;
+            }
+        }
+        // === ADD: ROI 색 팔레트 추출 (간단 KMeans, 3개 권장) ===
+        // ROI에서 대표색 팔레트 K=3 추출 (OpenCvSharp 호환 버전)
+        private List<Color> ExtractRoiPaletteKMeans(Bitmap src, RectangleF roiImg, int k = 3)
+        {
+            if (src == null || k <= 0) return null;
+
+            var rect = Rectangle.Round(roiImg);
+            rect.Intersect(new Rectangle(0, 0, src.Width, src.Height));
+            if (rect.Width < 2 || rect.Height < 2) return null;
+
+            using (var roi = src.Clone(rect, System.Drawing.Imaging.PixelFormat.Format24bppRgb))
+            using (var m = OpenCvSharp.Extensions.BitmapConverter.ToMat(roi))
+            {
+                // 다운샘플 (속도)
+                int step = Math.Max(1, Math.Min(4, Math.Min(m.Cols, m.Rows) / 128));
+
+                // 샘플 행렬 준비 (배열 생성자 쓰지 않고 안전하게 Set로 채움)
+                // 수집 먼저
+                var pts = new List<OpenCvSharp.Vec3f>();
+                for (int y = 0; y < m.Rows; y += step)
+                {
+                    for (int x = 0; x < m.Cols; x += step)
+                    {
+                        var bgr = m.Get<OpenCvSharp.Vec3b>(y, x);
+                        pts.Add(new OpenCvSharp.Vec3f(bgr.Item2, bgr.Item1, bgr.Item0)); // R,G,B
+                    }
+                }
+                if (pts.Count < k) k = Math.Max(1, pts.Count);
+
+                // pts → samples (CV_32FC1, rows = N, cols = 3)
+                var samples = new OpenCvSharp.Mat(pts.Count, 3, OpenCvSharp.MatType.CV_32FC1);
+                for (int i = 0; i < pts.Count; i++)
+                {
+                    var v = pts[i]; // R,G,B (float)
+                    samples.Set(i, 0, v.Item0);
+                    samples.Set(i, 1, v.Item1);
+                    samples.Set(i, 2, v.Item2);
+                }
+
+                using (var labels = new OpenCvSharp.Mat())
+                using (var centers = new OpenCvSharp.Mat())
+                {
+                    var term = new OpenCvSharp.TermCriteria(
+                        OpenCvSharp.CriteriaTypes.Eps | OpenCvSharp.CriteriaTypes.MaxIter, 10, 1.0);
+
+                    OpenCvSharp.Cv2.Kmeans(
+                        samples, k, labels, term, 1,
+                        OpenCvSharp.KMeansFlags.PpCenters, centers);
+
+                    var palette = new List<Color>(k);
+                    for (int iCenter = 0; iCenter < centers.Rows; iCenter++)
+                    {
+                        float r = centers.At<float>(iCenter, 0);
+                        float g = centers.At<float>(iCenter, 1);
+                        float b = centers.At<float>(iCenter, 2);
+                        palette.Add(Color.FromArgb(
+                            255,
+                            (int)Math.Max(0, Math.Min(255, r)),
+                            (int)Math.Max(0, Math.Min(255, g)),
+                            (int)Math.Max(0, Math.Min(255, b))));
+                    }
+                    return palette;
+                }
+            }
+        }
+
+
+        // === ADD: 리튠 실행 ===
+        private async Task RetuneAsync(ImageCanvas c, bool cyclePreset, bool cycleCluster, bool togglePolarity)
+        {
+            if (c == null || c.Image == null) return;
+            if (_aiBusy) return;
+
+            // 1) 상태 갱신
+            if (cyclePreset)
+            {
+                _preset = (RetunePreset)(((int)_preset + 1) % 3);
+            }
+            if (togglePolarity) _gateAsForeground = !_gateAsForeground;
+            if (cycleCluster && _gatePalette != null && _gatePalette.Count > 0)
+            {
+                _gateClusterIndex = (_gateClusterIndex + 1) % _gatePalette.Count;
+            }
+
+            // 2) 프롬프트 확보 (마지막 사용)
+            var prompt = _lastPrompt;
+            if (prompt == null)
+            {
+                // ROI 모드라면 ROI 박스를 사용
+                if (_roiMode && !_roiRectImg.IsEmpty) prompt = AISegmenterPrompt.FromBox(_roiRectImg);
+                else if (!_rectImg.IsEmpty) prompt = AISegmenterPrompt.FromBox(_rectImg);
+                else return; // 재세그할 프롬프트가 없음
+            }
+
+            // 3) 팔레트 준비(최초 1회)
+            if (_gatePalette == null || _gatePalette.Count == 0)
+            {
+                // 프롬프트가 Box인 경우에만 팔레트 추출; Points일 때는 UnionBounds 사용 가능
+                RectangleF roiForPalette;
+                if (prompt.Kind == PromptKind.Box && prompt.Box.HasValue) roiForPalette = prompt.Box.Value;
+                else roiForPalette = _previewUnionBoundsImg.IsEmpty ? new RectangleF(0, 0, c.Image.Width, c.Image.Height) : _previewUnionBoundsImg;
+
+                _gatePalette = ExtractRoiPaletteKMeans(c.Image as Bitmap, roiForPalette, 3) ?? new List<Color> { c.ActiveStrokeColor };
+                _gateClusterIndex = Math.Min(_gateClusterIndex, _gatePalette.Count - 1);
+            }
+
+            // 4) 옵션 적용 (프리셋 + ColorGate)
+            _opts.UseColorGate = true;
+            _opts.GateColorSpace = _gateSpace;
+            _opts.GateAsForeground = _gateAsForeground;
+            _opts.GateColor = _gatePalette[Math.Max(0, Math.Min(_gateClusterIndex, _gatePalette.Count - 1))];
+            ApplyPresetValues(_opts, _preset);
+
+            // 5) 실행
+            _aiBusy = true;
+            Cursor old = c.Cursor;
+            Bitmap bmpSafe = null;
+            List<List<PointF>> polys = null;
+
+            try
+            {
+                c.Cursor = Cursors.WaitCursor;
+                bmpSafe = CloneForWorker(c.Image);
+                polys = await Task.Run(() => _segmenter.Segment(bmpSafe, prompt, _opts));
+            }
+            catch (Exception ex)
+            {
+                var owner = c.FindForm() ?? (IWin32Window)c;
+                MessageBox.Show(owner, "Retune failed:\n" + ex.Message, "AI",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+            finally
+            {
+                if (bmpSafe != null) bmpSafe.Dispose();
+                c.Cursor = old;
+                _aiBusy = false;
+            }
+
+            if (polys == null || polys.Count == 0) return;
+
+            // 6) 프리뷰 교체 (기존 로직과 동일)
+            var outPolys = new List<List<PointF>>(polys.Count);
+            foreach (var p in polys)
+            {
+                float peri = Perimeter(p);
+                int desiredK = (int)Math.Max(8, Math.Min(128, Math.Round(peri / 6f)));
+                var q = (_previewVertexCount > 0) ? SimplifyToK(p, Math.Min(_previewVertexCount, desiredK)) : p;
+                outPolys.Add(q);
+            }
+
+            _previewPolys = outPolys;
+            _previewUnionBoundsImg = UnionBounds(outPolys);
+            c.Invalidate();
+        }
+
 
         private static Bitmap CloneForWorker(Image img)
         {
@@ -75,6 +278,13 @@ namespace SmartLabelingApp
                 if (_cancelBtnScr.Contains(e.Location))
                 {
                     CancelPreview(c);
+                    return;
+                }
+                if (_retuneBtnScr.Contains(e.Location))
+                {
+                    bool shift = (Control.ModifierKeys & Keys.Shift) == Keys.Shift;   // 색 클러스터 순환
+                    bool ctrl = (Control.ModifierKeys & Keys.Control) == Keys.Control; // FG/BG 극성 토글
+                    _ = RetuneAsync(c, cyclePreset: !shift && !ctrl, cycleCluster: shift, togglePolarity: ctrl);
                     return;
                 }
             }
@@ -316,7 +526,71 @@ namespace SmartLabelingApp
             {
                 _okBtnScr = _cancelBtnScr = Rectangle.Empty;
             }
+            // === ADD: Retune(↻) 버튼 및 상태 뱃지 ===
+            if (_previewPolys != null && _previewPolys.Count > 0)
+            {
+                var bScr = c.Transform.ImageRectToScreen(_previewUnionBoundsImg);
+                var retRect = new Rectangle(_cancelBtnScr.Right + BtnGap, _cancelBtnScr.Top, BtnSize, BtnSize);
+
+                // ↻ 버튼
+                DrawRetuneButton(g, retRect);
+                _retuneBtnScr = retRect;
+
+                // === 상태 배지 (Preset / Palette / FG/BG + 단축키 힌트) ===
+                string presetText = _preset.ToString();            // Conservative / Balanced / Aggressive
+                string pol = _gateAsForeground ? "FG" : "BG";
+                string line1 = $"{presetText} · C{_gateClusterIndex} · {pol}";
+                string line2 = "↻:Preset   Shift+↻:Color   Ctrl+↻:FG/BG";
+
+                // 두 줄 레이아웃: 더 긴 줄 기준으로 폭 계산
+                using (var f = new Font(SystemFonts.DefaultFont, FontStyle.Regular))
+                {
+                    var size1 = g.MeasureString(line1, f);
+                    var size2 = g.MeasureString(line2, f);
+                    float padX = 6f, padY = 3f, gapY = 1f;
+                    float w = Math.Max(size1.Width, size2.Width) + padX * 2;
+                    float h = size1.Height + gapY + size2.Height + padY * 2;
+
+                    var badge = new RectangleF(_retuneBtnScr.Right + BtnGap, _retuneBtnScr.Top - 1, w, h);
+
+                    using (var bg = new SolidBrush(Color.FromArgb(235, 255, 255, 255)))
+                    using (var pen = new Pen(Color.DimGray))
+                    using (var frg = new SolidBrush(Color.Black))
+                    {
+                        g.FillRectangle(bg, badge);
+                        g.DrawRectangle(pen, badge.X, badge.Y, badge.Width, badge.Height);
+
+                        float x = badge.X + padX;
+                        float y = badge.Y + padY;
+                        g.DrawString(line1, f, frg, new PointF(x, y));
+                        y += size1.Height + gapY;
+                        g.DrawString(line2, f, frg, new PointF(x, y));
+                    }
+                }
+
+            }
+            else
+            {
+                _retuneBtnScr = Rectangle.Empty;
+            }
+
         }
+
+        // === ADD: ↻ 버튼 그리기 ===
+        private static void DrawRetuneButton(Graphics g, Rectangle r)
+        {
+            var br = new SolidBrush(Color.FromArgb(235, 255, 255, 255));
+            g.FillRectangle(br, r);
+            g.DrawRectangle(Pens.SteelBlue, r);
+            var p = new Pen(Color.SteelBlue, 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            // 간단한 회전 아이콘
+            int cx = r.Left + r.Width / 2;
+            int cy = r.Top + r.Height / 2;
+            g.DrawArc(p, r.Left + 3, r.Top + 3, r.Width - 6, r.Height - 6, 30, 270);
+            g.DrawLine(p, cx + 4, r.Top + 6, r.Right - 4, r.Top + 8);
+        }
+
+
         // 무지개 컬러 블렌드
         private static System.Drawing.Drawing2D.ColorBlend RainbowBlend()
         {
@@ -380,6 +654,7 @@ namespace SmartLabelingApp
             _autoCommitNextPreview = autoCommit;
 
             var prompt = AISegmenterPrompt.FromBox(boxImg);
+            _lastPrompt = prompt; // === ADD: 재세그용으로 보관
             List<List<PointF>> polys = null;
 
             Cursor old = c.Cursor;
