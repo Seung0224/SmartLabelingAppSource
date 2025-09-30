@@ -4296,7 +4296,7 @@ namespace SmartLabelingApp
                         var heat = HeatmapOverlay.MakeOverlay(
                             srcCopy, patchMin,
                             _patchcoreArtifacts.GridH, _patchcoreArtifacts.GridW,
-                            alphaMin: 0.1f, alphaMax: 0.6f, gamma: 0.9f);
+                            alphaMin: 0f, alphaMax: 0.6f, gamma: 2.5f);
 
                         resultBmp = UiOverlayUtils.DrawStatusFrameFromAnomaly(heat, true, imgScore);
                     }
