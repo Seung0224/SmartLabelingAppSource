@@ -20,11 +20,24 @@ using static TheArtOfDevHtmlRenderer.Adapters.RGraphicsPath;
 
 namespace SmartLabelingApp
 {
+    /// <summary>
+    /// GPU 환경 사용 시 Microsoft.ML.OnnxRuntime.Gpu 패키지 필요
+    /// CPU 환경 사용 시 Microsoft.ML.OnnxRuntime 패키지 필요
+    /// CPU 환경 사용 및 속도 개선 시 Microsoft.ML.OnnxRuntime.DirectML 패키지 필요
+    /// CPU /GPU 런타임은 실행환경에 맞게 별도 설치 필요
+    /// 중복으로 설치 시 충돌 발생
+    /// </summary>
+
     public partial class MainForm : Form
     {
         #region 0) DeepLearning Fields
+        // Yolo Segmentation
         private InferenceSession _onnxSession = null;
         private YoloSegEngine _engineSession = null;
+
+        // PatchCore Anomaly Segmentation
+        private InferenceSession _patchcoreSession = null;
+        private Artifacts _patchcoreArtifacts;
         #endregion
         #region 1) Constants & Static Data (상수/정적 데이터)
 
@@ -1131,16 +1144,9 @@ namespace SmartLabelingApp
                 using (var overlay = new ProgressOverlay(this, "모델 준비 중…"))
                 {
                     var progress = new Progress<(int, string)>(p => overlay.Report(p.Item1, p.Item2));
+                    var newSession = await Task.Run(() => SmartLabelingApp.YoloSegOnnx.EnsureSession(path, progress));
 
-
-                    var newSession = await Task.Run(() =>
-                        SmartLabelingApp.YoloSegOnnx.EnsureSession(path, progress));
-
-
-                    var old = _onnxSession;
                     _onnxSession = newSession;
-                    old?.Dispose();
-
 
                     SetModelHeader(System.IO.Path.GetFileName(path));
                     SetRuntypeHeader(_currentRunTypeName);
@@ -1329,7 +1335,17 @@ namespace SmartLabelingApp
             }
 
             if (_toggleOn)
-                _ = AutoInferIfEnabledAsync();
+            {
+                if (_currentModelName.Contains("PatchCore"))
+                {
+                    _ = AutoPatchCoreInferIfEnabledAsync();
+
+                }
+                else
+                {
+                    _ = AutoInferIfEnabledAsync();
+                }
+            }    
 
             if (_canvas != null && !_canvas.Focused) _canvas.Focus();
         }
@@ -1340,7 +1356,10 @@ namespace SmartLabelingApp
             _canvas.Invalidate();
 
             try { NavigateImage(-1); } catch { }
-            await AutoInferIfEnabledAsync();
+            if (_currentModelName.Contains("PatchCore"))
+                await AutoPatchCoreInferIfEnabledAsync();
+            else
+                await AutoInferIfEnabledAsync();
             _canvas?.Focus();
         }
         private async void OnNextClick(object sender, EventArgs e)
@@ -1349,7 +1368,11 @@ namespace SmartLabelingApp
             _canvas.Invalidate();
 
             try { NavigateImage(+1); } catch { }
-            await AutoInferIfEnabledAsync();
+            if (_currentModelName.Contains("PatchCore"))
+                await AutoPatchCoreInferIfEnabledAsync();
+            else
+                await AutoInferIfEnabledAsync();
+            
             _canvas?.Focus();
         }
 
@@ -2922,6 +2945,14 @@ namespace SmartLabelingApp
             catch { /* ignore */ }
             finally { _engineSession = null; }
 
+            try
+            {
+                _patchcoreSession?.Dispose();
+            }
+            catch { /* ignore */ }
+            finally { _patchcoreSession = null; }
+            _patchcoreArtifacts = null;
+
             _currentModelName = null;
         }
 
@@ -2930,9 +2961,12 @@ namespace SmartLabelingApp
         {
             return Task.Run(() =>
             {
-                // 필요 시 내부에서 warmup 수행 가능
-                _onnxSession = YoloSegOnnx.EnsureSession(onnxPath, progress);
-                _currentModelName = onnxPath;
+                if (_onnxSession == null)
+                {
+                    // 필요 시 내부에서 warmup 수행 가능
+                    _onnxSession = YoloSegOnnx.EnsureSession(onnxPath, progress);
+                    _currentModelName = onnxPath;
+                }
             });
         }
 
@@ -2941,8 +2975,11 @@ namespace SmartLabelingApp
         {
             return Task.Run(() =>
             {
-                _engineSession = new YoloSegEngine(enginePath, deviceId: 0);
-                _currentModelName = enginePath;
+                if (_engineSession == null)
+                {
+                    _engineSession = new YoloSegEngine(enginePath, deviceId: 0);
+                    _currentModelName = enginePath;
+                }
 
                 // Warmup 부분 구현 필요
             });
@@ -2953,55 +2990,55 @@ namespace SmartLabelingApp
             using (var dlg = new OpenFileDialog())
             {
                 dlg.Title = "이미지 파일 or 폴더 or 딥러닝 모델 열기";
-                dlg.Filter = "Image/Model|*.png;*.jpg;*.jpeg;*.bmp;*.onnx;*.engine|모든 파일|*.*";
+                dlg.Filter = "Image/Model|*.png;*.jpg;*.jpeg;*.bmp;*.onnx;*.engine;|모든 파일|*.*";
                 dlg.Multiselect = false;
-                dlg.CheckFileExists = false;
-                dlg.ValidateNames = false;
+                dlg.CheckFileExists = false;   // 폴더 선택 허용
+                dlg.ValidateNames = false;     // "폴더를 선택하려면..." dummy 파일명 허용
                 dlg.FileName = "폴더를 선택하려면 이 항목을 클릭하세요";
 
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
 
                 var chosen = dlg.FileName;
 
-                // 파일 경로인 경우
-                if (System.IO.File.Exists(chosen))
+                // ───────────────────────────────────────────────────────────────
+                // 1) 파일 선택
+                // ───────────────────────────────────────────────────────────────
+                if (File.Exists(chosen))
                 {
-                    var ext = System.IO.Path.GetExtension(chosen)?.ToLowerInvariant();
+                    var ext = Path.GetExtension(chosen)?.ToLowerInvariant();
 
-                    // 1) 모델 로드 (.onnx / .engine)
-                    if (ext == ".onnx" || ext == ".engine")
+                    // wrn50_l3.onnx를 직접 선택 → PatchCore 폴더로 처리
+                    bool isWrn = string.Equals(Path.GetFileName(chosen), "wrn50_l3.onnx", StringComparison.OrdinalIgnoreCase);
+
+                    if (ext == ".onnx" || ext == ".engine" || isWrn)
                     {
                         using (var overlay = new ProgressOverlay(this, "Loading model"))
                         {
                             var progress = new Progress<(int, string)>(p => overlay.Report(p.Item1, p.Item2));
+
                             try
                             {
-                                // 이전 모델 정리
-                                DisposeCurrentModel();
-
-                                if (ext == ".onnx")
-                                {
-                                    await LoadOnnxAsync(chosen, progress).ConfigureAwait(true);
-                                }
-                                else // .engine
+                                if (ext == ".engine")
                                 {
                                     await LoadEngineAsync(chosen).ConfigureAwait(true);
+                                    SetModelHeader(Path.GetFileName(chosen));
                                 }
-                            }
-                            catch (DllNotFoundException dex)
-                            {
-                                DisposeCurrentModel();
-                                new Guna.UI2.WinForms.Guna2MessageDialog
+                                else if (ext == ".onnx" && !isWrn)
                                 {
-                                    Parent = this,
-                                    Caption = "필수 DLL 누락",
-                                    Text = "TensorRT/CUDA DLL을 찾을 수 없습니다.\n" +
-                                           "nvinfer.dll, nvinfer_plugin.dll, cudart64_xxx.dll 등을 실행 폴더에 복사했는지 확인하세요.\n\n" +
-                                           dex.Message,
-                                    Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
-                                    Icon = Guna.UI2.WinForms.MessageDialogIcon.Error
-                                }.Show();
-                                return;
+                                    // 일반 .onnx (예: 기존 분류/세그 모델)
+                                    await LoadOnnxAsync(chosen, progress).ConfigureAwait(true);
+                                    SetModelHeader(Path.GetFileName(chosen));
+                                }
+                                else
+                                {
+                                    // .patchcore 선택 or wrn50_l3.onnx 직접 선택
+                                    var folder = Path.GetDirectoryName(chosen) ?? chosen;
+                                    await LoadPatchCoreAsync(folder, progress).ConfigureAwait(true);
+
+                                    // 헤더에는 폴더명 표시
+                                    var hdr = Path.GetFileName(folder.TrimEnd(Path.DirectorySeparatorChar));
+                                    SetModelHeader(string.IsNullOrEmpty(hdr) ? folder : hdr);
+                                }
                             }
                             catch (Exception ex)
                             {
@@ -3010,7 +3047,7 @@ namespace SmartLabelingApp
                                 {
                                     Parent = this,
                                     Caption = "오류",
-                                    Text = $"딥러닝 모델 열기 실패:\n{ex.Message}",
+                                    Text = $"모델 열기 실패:\n{ex.Message}",
                                     Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
                                     Icon = Guna.UI2.WinForms.MessageDialogIcon.Error
                                 }.Show();
@@ -3018,22 +3055,34 @@ namespace SmartLabelingApp
                             }
                         }
 
-                        SetModelHeader(System.IO.Path.GetFileName(chosen));
                         UpdateModelDependentControls();
                         return;
                     }
 
-                    // 2) 이미지 파일
+                    // 이미지 파일
                     if (IsImageFile(chosen))
                     {
                         try
                         {
                             LoadImageAtPath(chosen);
-                            var folder = System.IO.Path.GetDirectoryName(chosen);
-                            if (!string.IsNullOrEmpty(folder) && System.IO.Directory.Exists(folder))
+                            var folder = Path.GetDirectoryName(chosen);
+                            if (!string.IsNullOrEmpty(folder) && Directory.Exists(folder))
                             {
                                 PopulateTreeFromFolder(folder);
                                 SelectNodeByPath(chosen);
+                            }
+
+                            if (_toggleOn)
+                            {
+                                if (_currentModelName.Contains("PatchCore"))
+                                {
+                                    _ = AutoPatchCoreInferIfEnabledAsync();
+
+                                }
+                                else
+                                {
+                                    _ = AutoInferIfEnabledAsync();
+                                }
                             }
                         }
                         catch (Exception ex)
@@ -3044,30 +3093,128 @@ namespace SmartLabelingApp
                         return;
                     }
 
-                    // 3) 그 외: 파일과 같은 폴더를 트리로 로드
-                    var parent = System.IO.Path.GetDirectoryName(chosen);
-                    if (!string.IsNullOrEmpty(parent) && System.IO.Directory.Exists(parent))
+                    // 그 외: 같은 폴더를 트리로 로드
+                    var parent = Path.GetDirectoryName(chosen);
+                    if (!string.IsNullOrEmpty(parent) && Directory.Exists(parent))
                     {
                         PopulateTreeFromFolder(parent);
                     }
                     return;
                 }
 
-                // 폴더 선택 허용 (CheckFileExists=false + ValidateNames=false 사용 시)
-                if (System.IO.Directory.Exists(chosen))
+                // ───────────────────────────────────────────────────────────────
+                // 2) 폴더 선택 (CheckFileExists=false + ValidateNames=false)
+                // ───────────────────────────────────────────────────────────────
+                if (Directory.Exists(chosen))
                 {
+                    // 폴더 안에 PatchCore 4종이 모두 있으면 PatchCore로 처리
+                    if (IsPatchCoreFolder(chosen))
+                    {
+                        using (var overlay = new ProgressOverlay(this, "Loading PatchCore"))
+                        {
+                            var progress = new Progress<(int, string)>(p => overlay.Report(p.Item1, p.Item2));
+                            try
+                            {
+                                DisposeCurrentModel();
+                                await LoadPatchCoreAsync(chosen, progress).ConfigureAwait(true);
+                                var hdr = Path.GetFileName(chosen.TrimEnd(Path.DirectorySeparatorChar));
+                                SetModelHeader(string.IsNullOrEmpty(hdr) ? chosen : hdr);
+                                UpdateModelDependentControls();
+                            }
+                            catch (Exception ex)
+                            {
+                                DisposeCurrentModel();
+                                new Guna.UI2.WinForms.Guna2MessageDialog
+                                {
+                                    Parent = this,
+                                    Caption = "오류",
+                                    Text = $"PatchCore 열기 실패:\n{ex.Message}",
+                                    Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
+                                    Icon = Guna.UI2.WinForms.MessageDialogIcon.Error
+                                }.Show();
+                            }
+                        }
+                        return;
+                    }
+
+                    // 일반 폴더: 트리 로드
                     PopulateTreeFromFolder(chosen);
                     return;
                 }
 
-                // 혹시 파일명이 가짜일 때 폴더 추정
-                var maybeFolder = System.IO.Path.GetDirectoryName(chosen);
-                if (!string.IsNullOrEmpty(maybeFolder) && System.IO.Directory.Exists(maybeFolder))
+                // 3) 가짜 파일명 → 폴더 추정
+                var maybeFolder = Path.GetDirectoryName(chosen);
+                if (!string.IsNullOrEmpty(maybeFolder) && Directory.Exists(maybeFolder))
                 {
+                    // PatchCore 폴더 인지 한번 더 체크
+                    if (IsPatchCoreFolder(maybeFolder))
+                    {
+                        using (var overlay = new ProgressOverlay(this, "Loading PatchCore"))
+                        {
+                            var progress = new Progress<(int, string)>(p => overlay.Report(p.Item1, p.Item2));
+                            try
+                            {
+                                await LoadPatchCoreAsync(maybeFolder, progress).ConfigureAwait(true);
+                                var hdr = Path.GetFileName(maybeFolder.TrimEnd(Path.DirectorySeparatorChar));
+                                SetModelHeader(string.IsNullOrEmpty(hdr) ? maybeFolder : hdr);
+                                UpdateModelDependentControls();
+                            }
+                            catch (Exception ex)
+                            {
+                                DisposeCurrentModel();
+                                new Guna.UI2.WinForms.Guna2MessageDialog
+                                {
+                                    Parent = this,
+                                    Caption = "오류",
+                                    Text = $"PatchCore 열기 실패:\n{ex.Message}",
+                                    Buttons = Guna.UI2.WinForms.MessageDialogButtons.OK,
+                                    Icon = Guna.UI2.WinForms.MessageDialogIcon.Error
+                                }.Show();
+                            }
+                        }
+                        return;
+                    }
+
                     PopulateTreeFromFolder(maybeFolder);
                 }
             }
         }
+        private static bool IsPatchCoreFolder(string folder)
+        {
+            return File.Exists(Path.Combine(folder, "wrn50_l3.onnx")) &&
+                   File.Exists(Path.Combine(folder, "gallery_f32.bin")) &&
+                   File.Exists(Path.Combine(folder, "threshold.json")) &&
+                   File.Exists(Path.Combine(folder, "meta.json"));
+        }
+
+        private async Task LoadPatchCoreAsync(string folder, IProgress<(int, string)> progress)
+        {
+            progress?.Report((10, "Checking files..."));
+
+            string onnx = Path.Combine(folder, "wrn50_l3.onnx");
+            string gallery = Path.Combine(folder, "gallery_f32.bin");
+            string thr = Path.Combine(folder, "threshold.json");
+            string meta = Path.Combine(folder, "meta.json");
+
+            if (!File.Exists(onnx) || !File.Exists(gallery) || !File.Exists(thr) || !File.Exists(meta))
+                throw new FileNotFoundException("PatchCore 모델 구성 요소(.onnx, .bin, .json) 중 일부가 없습니다.");
+
+            progress?.Report((40, "Loading artifacts..."));
+            if (_patchcoreArtifacts == null)
+            {
+                _patchcoreArtifacts = await Task.Run(() => Artifacts.Load(folder)).ConfigureAwait(false);
+            }
+
+            progress?.Report((70, "Creating ONNX session..."));
+            if (_patchcoreSession == null)
+            {
+                _patchcoreSession = await Task.Run(() => PatchCoreOnnx.CreateSession(_patchcoreArtifacts.OnnxPath)).ConfigureAwait(false);
+            }
+
+            progress?.Report((100, "PatchCore ready."));
+        }
+
+
         private async Task AutoInferIfEnabledAsync()
         {
             if (!_toggleOn) return;
@@ -3081,6 +3228,26 @@ namespace SmartLabelingApp
             try
             {
                 await RunInferenceAndApplyAsync(_autoInferCts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // 취소는 무시
+            }
+        }
+
+        private async Task AutoPatchCoreInferIfEnabledAsync()
+        {
+            if (!_toggleOn) return;
+            if (_patchcoreSession == null || _sourceImage == null) return;
+
+            // 이전 작업 취소
+            _autoInferCts?.Cancel();
+            _autoInferCts?.Dispose();
+            _autoInferCts = new CancellationTokenSource();
+
+            try
+            {
+                await RunPatchCoreInferenceAsync(_autoInferCts.Token);
             }
             catch (OperationCanceledException)
             {
@@ -4011,7 +4178,14 @@ namespace SmartLabelingApp
 
             try
             {
-                await RunInferenceAndApplyAsync(CancellationToken.None);
+                if (_currentModelName.Contains("PatchCore"))
+                {
+                    await RunPatchCoreInferenceAsync(CancellationToken.None);
+                }
+                else
+                {
+                    await RunInferenceAndApplyAsync(CancellationToken.None);
+                }
             }
             catch (Exception ex)
             {
@@ -4025,6 +4199,138 @@ namespace SmartLabelingApp
                 }.Show();
             }
         }
+
+        // 클래스 상단이나 필드로 추가 (사용자가 값 조정 가능)
+        private const float USER_THRESHOLD = 0.25f;
+
+        private async Task<bool> RunPatchCoreInferenceAsync(CancellationToken token = default)
+        {
+            if (_patchcoreSession == null || _patchcoreArtifacts == null)
+            {
+                MessageBox.Show(this, "PatchCore 모델이 로드되지 않았습니다. 먼저 .patchcore를 여세요.",
+                    "안내", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return false;
+            }
+
+            var overlays = new List<SmartLabelingApp.ImageCanvas.OverlayItem>();
+            Bitmap resultBmp = null;
+            float imgScore = 0;
+            bool isNg = false;
+
+            using (var srcCopy = (Bitmap)_sourceImage.Clone())
+            {
+                await Task.Run(() =>
+                {
+                    if (token.IsCancellationRequested) return;
+
+                    var swAll = System.Diagnostics.Stopwatch.StartNew();
+
+                    // 1) 전처리
+                    var swPre = System.Diagnostics.Stopwatch.StartNew();
+                    var input = ImagePreprocessor.PreprocessToCHW(srcCopy, new PreprocessConfig
+                    {
+                        resize = 256,
+                        crop = _patchcoreArtifacts.InputSize,
+                        mean = _patchcoreArtifacts.Mean,
+                        std = _patchcoreArtifacts.Std
+                    });
+                    swPre.Stop();
+
+                    // 2) ONNX 실행 (layer3)
+                    var swInfer = System.Diagnostics.Stopwatch.StartNew();
+                    var results = PatchCoreOnnx.Run(_patchcoreSession, input);
+                    var tL3 = results.First(r => r.Name == "layer3").AsTensor<float>();
+                    swInfer.Stop();
+
+                    // 3) L3-only 패치 임베딩
+                    var swEmbed = System.Diagnostics.Stopwatch.StartNew();
+                    var pe = PatchEmbedder.BuildFromL3(tL3);
+                    swEmbed.Stop();
+
+                    // 4) 거리 계산 (cosine, k=1)
+                    var swDist = System.Diagnostics.Stopwatch.StartNew();
+                    var patchMin = new float[pe.Patches];
+                    bool usedMKL = false, usedSIMD = false;
+
+                    try
+                    {
+                        Distance.RowwiseMinDistancesIP_MKL(
+                            pe.RowsRowMajor, pe.Patches, pe.Dim,
+                            _patchcoreArtifacts.Gallery, _patchcoreArtifacts.GalleryRows,
+                            patchMin);
+                        usedMKL = true;
+                    }
+                    catch (TypeLoadException) { }
+
+                    if (!usedMKL)
+                    {
+                        try
+                        {
+                            Distance.RowwiseMinDistancesIP_Optimized(
+                                pe.RowsRowMajor, pe.Patches, pe.Dim,
+                                _patchcoreArtifacts.Gallery, _patchcoreArtifacts.GalleryRows,
+                                patchMin);
+                            usedSIMD = true;
+                        }
+                        catch (MissingMethodException) { }
+                        catch (EntryPointNotFoundException) { }
+                    }
+
+                    if (!usedMKL && !usedSIMD)
+                    {
+                        Distance.RowwiseMinDistances(
+                            pe.RowsRowMajor, pe.Patches, pe.Dim,
+                            _patchcoreArtifacts.Gallery, _patchcoreArtifacts.GalleryRows,
+                            "ip", patchMin);
+                    }
+
+                    imgScore = patchMin.Max();
+                    isNg = imgScore > USER_THRESHOLD; // 기준점: 낮으면 NG
+                    swDist.Stop();
+
+                    // 5) OK/NG 결과 처리
+                    var swOverlay = System.Diagnostics.Stopwatch.StartNew();
+                    if (isNg)
+                    {
+                        // NG → 히트맵 + NG 라벨
+                        var heat = HeatmapOverlay.MakeOverlay(
+                            srcCopy, patchMin,
+                            _patchcoreArtifacts.GridH, _patchcoreArtifacts.GridW,
+                            alphaMin: 0.1f, alphaMax: 0.6f, gamma: 0.9f);
+
+                        resultBmp = UiOverlayUtils.DrawStatusFrameFromAnomaly(heat, true, imgScore);
+                    }
+                    else
+                    {
+                        // OK → 원본 + OK 라벨
+                        resultBmp = UiOverlayUtils.DrawStatusFrameFromAnomaly(srcCopy, false, imgScore);
+                    }
+                    swOverlay.Stop();
+
+                    swAll.Stop();
+
+                    var sumMs = swPre.Elapsed.TotalMilliseconds + swInfer.Elapsed.TotalMilliseconds + swEmbed.Elapsed.TotalMilliseconds + swDist.Elapsed.TotalMilliseconds;
+
+                    // 로그
+                    AddLog($"[PatchCore] Inference 완료: pre={swPre.Elapsed.TotalMilliseconds:F0}ms, " +
+                           $"infer={swInfer.Elapsed.TotalMilliseconds:F0}ms, " +
+                           $"embed={swEmbed.Elapsed.TotalMilliseconds:F0}ms, " +
+                           $"dist={swDist.Elapsed.TotalMilliseconds:F0}ms, Inference Time: {sumMs:F0}ms, ({(usedMKL ? "MKL" : usedSIMD ? "SIMD" : "Naive")})");
+                    AddLog($"[PatchCore] Draw{(isNg ? "Heatmap+Label" : "Label")} 완료: {swOverlay.Elapsed.TotalMilliseconds:F0}ms");
+                    AddLog($"[PatchCore] Score={imgScore:F6}, UserThr={USER_THRESHOLD:F6}, 결과={(isNg ? "NG" : "OK")}");
+                    AddLog($"[PatchCore] 총합 ≈ {swAll.Elapsed.TotalMilliseconds:F0}ms");
+                }, token).ConfigureAwait(true);
+            }
+
+            if (token.IsCancellationRequested || resultBmp == null)
+                return false;
+
+            _canvas.SetImageAndOverlays(resultBmp, overlays);
+            return true;
+        }
+
+
+
 
         private async Task<bool> WaitForFileReadyAsync(string path, TimeSpan timeout, Action<int, string> progress = null)
         {
@@ -4610,6 +4916,7 @@ namespace SmartLabelingApp
         private void MainForm_FormClosed(object sender, FormClosedEventArgs e)
         {
             if (_aiRainbowBg != null) { _aiRainbowBg.Dispose(); _aiRainbowBg = null; }
+            DisposeCurrentModel();
         }
     }
 }
