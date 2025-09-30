@@ -36,7 +36,7 @@ namespace SmartLabelingApp
             int thickness = 10,
             int marginX = 20,
             int marginY = 16,
-            int fontSize = 30,
+            int fontSize = 50,
             int bgAlpha = 20,
             Color? bgColor = null)
         {
@@ -126,8 +126,8 @@ namespace SmartLabelingApp
             int thickness = 10,
             int marginX = 20,
             int marginY = 16,
-            int fontSize = 30,
-            int bgAlpha = 20,
+            int fontSize = 40,
+            int bgAlpha = 0,
             Color? bgColor = null)
         {
             var status = isAnomaly ? "NG" : "OK";

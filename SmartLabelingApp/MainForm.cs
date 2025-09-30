@@ -4321,11 +4321,7 @@ namespace SmartLabelingApp
                     if (isNg)
                     {
                         // NG → 히트맵 + NG 라벨
-                        var heat = HeatmapOverlay.MakeOverlay(
-                            srcCopy, patchMin,
-                            _patchcoreArtifacts.GridH, _patchcoreArtifacts.GridW,
-                            alphaMin: 0f, alphaMax: 0.6f, gamma: 2.5f);
-
+                        var heat = HeatmapOverlay.MakeOverlay(srcCopy, patchMin, _patchcoreArtifacts.GridH, _patchcoreArtifacts.GridW, alphaMin: 0f, alphaMax: 0.6f, gamma: 2.5f);
                         resultBmp = UiOverlayUtils.DrawStatusFrameFromAnomaly(heat, true, imgScore);
                     }
                     else
