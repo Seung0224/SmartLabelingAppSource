@@ -1,6 +1,7 @@
 ﻿using Guna.UI2.WinForms;
 using Guna.UI2.WinForms.Enums;
 using Microsoft.ML.OnnxRuntime;
+using Microsoft.ML.OnnxRuntime.Tensors;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -2956,6 +2957,19 @@ namespace SmartLabelingApp
             _currentModelName = null;
         }
 
+        private void DisposeCurrentPatchCore()
+        {
+            if (_patchcoreSession != null)
+            {
+                _patchcoreSession.Dispose();
+                _patchcoreSession = null;
+            }
+            if (_patchcoreArtifacts != null)
+            {
+                _patchcoreArtifacts = null;
+            }
+        }
+
         // 모델 로더 (ONNX)
         private Task LoadOnnxAsync(string onnxPath, IProgress<(int, string)> progress)
         {
@@ -3031,6 +3045,8 @@ namespace SmartLabelingApp
                                 }
                                 else
                                 {
+                                    DisposeCurrentPatchCore();
+
                                     // .patchcore 선택 or wrn50_l3.onnx 직접 선택
                                     var folder = Path.GetDirectoryName(chosen) ?? chosen;
                                     await LoadPatchCoreAsync(folder, progress).ConfigureAwait(true);
@@ -4201,7 +4217,7 @@ namespace SmartLabelingApp
         }
 
         // 클래스 상단이나 필드로 추가 (사용자가 값 조정 가능)
-        private const float USER_THRESHOLD = 0.25f;
+        private const float USER_THRESHOLD = 0.27f;
 
         private async Task<bool> RunPatchCoreInferenceAsync(CancellationToken token = default)
         {
@@ -4227,13 +4243,25 @@ namespace SmartLabelingApp
 
                     // 1) 전처리
                     var swPre = System.Diagnostics.Stopwatch.StartNew();
-                    var input = ImagePreprocessor.PreprocessToCHW(srcCopy, new PreprocessConfig
+
+                    DenseTensor<float> input;
+                    if (_patchcoreArtifacts.InputSize == 224)
                     {
-                        resize = 256,
-                        crop = _patchcoreArtifacts.InputSize,
-                        mean = _patchcoreArtifacts.Mean,
-                        std = _patchcoreArtifacts.Std
-                    });
+                        input = ImagePreprocessor.PreprocessToCHW(srcCopy, new PreprocessConfig
+                        {
+                            resize = 256,
+                            crop = _patchcoreArtifacts.InputSize,
+                        });
+                    }
+                    else
+                    {
+                        input = ImagePreprocessor.PreprocessToCHW(srcCopy, new PreprocessConfig
+                        {
+                            resize = 384,
+                            crop = _patchcoreArtifacts.InputSize,
+                        });
+                    }
+                    
                     swPre.Stop();
 
                     // 2) ONNX 실행 (layer3)
@@ -4312,12 +4340,11 @@ namespace SmartLabelingApp
                     var sumMs = swPre.Elapsed.TotalMilliseconds + swInfer.Elapsed.TotalMilliseconds + swEmbed.Elapsed.TotalMilliseconds + swDist.Elapsed.TotalMilliseconds;
 
                     // 로그
-                    AddLog($"[PatchCore] Inference 완료: pre={swPre.Elapsed.TotalMilliseconds:F0}ms, " +
+                    AddLog($"[PatchCore] pre={swPre.Elapsed.TotalMilliseconds:F0}ms, " +
                            $"infer={swInfer.Elapsed.TotalMilliseconds:F0}ms, " +
                            $"embed={swEmbed.Elapsed.TotalMilliseconds:F0}ms, " +
-                           $"dist={swDist.Elapsed.TotalMilliseconds:F0}ms, Inference Time: {sumMs:F0}ms, ({(usedMKL ? "MKL" : usedSIMD ? "SIMD" : "Naive")})");
-                    AddLog($"[PatchCore] Draw{(isNg ? "Heatmap+Label" : "Label")} 완료: {swOverlay.Elapsed.TotalMilliseconds:F0}ms");
-                    AddLog($"[PatchCore] Score={imgScore:F6}, UserThr={USER_THRESHOLD:F6}, 결과={(isNg ? "NG" : "OK")}");
+                           $"dist={swDist.Elapsed.TotalMilliseconds:F0}ms, 총 Inference Time: {sumMs:F0}ms, ({(usedMKL ? "MKL" : usedSIMD ? "SIMD" : "Naive")})");
+                    AddLog($"[PatchCore] DrawOverlay : {swOverlay.Elapsed.TotalMilliseconds:F0}ms");
                     AddLog($"[PatchCore] 총합 ≈ {swAll.Elapsed.TotalMilliseconds:F0}ms");
                 }, token).ConfigureAwait(true);
             }

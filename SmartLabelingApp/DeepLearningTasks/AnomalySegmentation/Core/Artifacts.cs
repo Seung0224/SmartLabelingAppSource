@@ -22,11 +22,11 @@ namespace SmartLabelingApp
         public string Metric { get; private set; } = "cosine"; // "cosine" expected
 
         // Preprocess / meta
-        public int InputSize { get; private set; } = 224;
-        public int GridH { get; private set; } = 14;
-        public int GridW { get; private set; } = 14;
-        public float[] Mean { get; private set; } = new float[] { 0.485f, 0.456f, 0.406f };
-        public float[] Std { get; private set; } = new float[] { 0.229f, 0.224f, 0.225f };
+        public int InputSize { get; private set; }
+        public int GridH { get; private set; }
+        public int GridW { get; private set; }
+        public float[] Mean { get; private set; }
+        public float[] Std { get; private set; }
 
         public static Artifacts Load(string exportDir)
         {
