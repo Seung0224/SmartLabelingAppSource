@@ -16,7 +16,6 @@ namespace SmartLabelingApp
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static float Sigmoid(float x)
         {
-            // 수치 안정성 분기: 큰 음수에서 exp(-x) overflow 방지
             if (x >= 0f)
             {
                 float z = (float)Math.Exp(-x);
@@ -48,12 +47,38 @@ namespace SmartLabelingApp
 #endif
             return v < lo ? lo : (v > hi ? hi : v);
         }
+        /// <summary>실수(double) 클램프</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static double Clamp(double v, double lo, double hi)
+        {
+#if DEBUG
+            if (lo > hi) throw new ArgumentException("Clamp bounds invalid: lo > hi");
+#endif
+            return v < lo ? lo : (v > hi ? hi : v);
+        }
+
 
         /// <summary>0~255 범위로 고정하고 byte로 변환</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static byte ClampByte(int v)
         {
             return (byte)(v < 0 ? 0 : (v > 255 ? 255 : v));
+        }
+
+        /// <summary>
+        /// Math.Clamp() 대체용 — C# 8 이하 환경에서도 사용 가능.
+        /// 제네릭으로 int, float, double 등 모든 비교형 지원.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static T MathClamp<T>(T value, T min, T max) where T : IComparable<T>
+        {
+#if DEBUG
+            if (min.CompareTo(max) > 0)
+                throw new ArgumentException("MathClamp bounds invalid: min > max");
+#endif
+            if (value.CompareTo(min) < 0) return min;
+            if (value.CompareTo(max) > 0) return max;
+            return value;
         }
     }
 }

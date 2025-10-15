@@ -78,6 +78,9 @@
     <Compile Include="Labeling\Canvas\BrushSizeWindow.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="Labeling\Canvas\ColorMapWindow.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="Labeling\Canvas\ExportResultDialog.cs">
       <SubType>Form</SubType>
     </Compile>
