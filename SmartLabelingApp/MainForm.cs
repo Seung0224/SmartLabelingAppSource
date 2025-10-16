@@ -110,10 +110,10 @@ namespace SmartLabelingApp
 
         private Guna2Panel _logPanel;
         private ListBox _logListBox;
-       
+
         private int VIEWER_MAX_W =>
             Math.Max(VIEWER_MIN_W, Screen.FromControl(this).WorkingArea.Width - VIEWER_HORIZONTAL_MARGIN);
-        
+
         private string _lastYoloExportRoot;
         private readonly Dictionary<string, Color> _classColorMap = new Dictionary<string, Color>(StringComparer.OrdinalIgnoreCase);
 
@@ -1104,102 +1104,12 @@ namespace SmartLabelingApp
             _colorMapOriginal?.Dispose();
             _colorMapOriginal = (Bitmap)src.Clone();
 
-            // LUT 초기화 (한번만 생성)
-            BuildJetLut();
-
             using (var dlg = new ColorMapWindow())
             {
-                dlg.OnLiveUpdate = ApplyColorMapLive;
                 dlg.ShowDialog(this);
-
-                if (!dlg.Confirmed && _colorMapOriginal != null)
-                {
-                    _canvas.SetImage(_colorMapOriginal);
-                    _canvas.ZoomToFit();
-                }
-
-                AddLog(dlg.Confirmed ? "ColorMap 적용 완료." : "ColorMap 적용 취소됨.");
             }
         }
 
-        private void BuildJetLut()
-        {
-            for (int i = 0; i < 65536; i++)
-            {
-                double t = i / 65535.0;
-                _jetLut16[i] = JetColor(t);
-            }
-        }
-
-        private void ApplyColorMapLive(ushort min, ushort max)
-        {
-            if (_colorMapOriginal == null || _canvas == null) return;
-
-            var src = _colorMapOriginal;
-            int w = src.Width, h = src.Height;
-
-            var dst = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
-
-            var rect = new Rectangle(0, 0, w, h);
-            var sd = src.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadOnly, src.PixelFormat);
-            var dd = dst.LockBits(rect, System.Drawing.Imaging.ImageLockMode.WriteOnly, dst.PixelFormat);
-
-            double scale = (max > min) ? (65535.0 / (max - min)) : 1.0;
-
-            unsafe
-            {
-                byte* sp = (byte*)sd.Scan0;
-                byte* dp = (byte*)dd.Scan0;
-                int strideS = sd.Stride;
-                int strideD = dd.Stride;
-
-                bool is16 = src.PixelFormat == System.Drawing.Imaging.PixelFormat.Format16bppGrayScale;
-
-                for (int y = 0; y < h; y++)
-                {
-                    byte* srow = sp + y * strideS;
-                    byte* drow = dp + y * strideD;
-
-                    for (int x = 0; x < w; x++)
-                    {
-                        ushort v = is16 ? ((ushort*)srow)[x] : (ushort)(srow[x] * 257);
-                        int norm = (int)((v - min) * scale);
-                        if (norm < 0) norm = 0;
-                        if (norm > 65535) norm = 65535;
-
-                        var c = _jetLut16[norm];
-                        int idx = x * 3;
-                        drow[idx + 0] = c.B;
-                        drow[idx + 1] = c.G;
-                        drow[idx + 2] = c.R;
-                    }
-                }
-            }
-
-            src.UnlockBits(sd);
-            dst.UnlockBits(dd);
-
-            _canvas.SetImage(dst);
-            _canvas.Invalidate();
-        }
-
-        private Color JetColor(double t)
-        {
-            t = Math.Max(0, Math.Min(1, t));
-            double r = 0, g = 0, b = 0;
-
-            if (t < 0.125) { r = 0; g = 0; b = 0.5 + 4 * t; }
-            else if (t < 0.375) { r = 0; g = 4 * (t - 0.125); b = 1; }
-            else if (t < 0.625) { r = 4 * (t - 0.375); g = 1; b = 1 - 4 * (t - 0.375); }
-            else if (t < 0.875) { r = 1; g = 1 - 4 * (t - 0.625); b = 0; }
-            else { r = 1 - 4 * (t - 0.875); g = 0; b = 0; }
-
-            r = MathUtils.Clamp(r, 0, 1);
-            g = MathUtils.Clamp(g, 0, 1);
-            b = MathUtils.Clamp(b, 0, 1);
-
-            return Color.FromArgb((int)(r * 255), (int)(g * 255), (int)(b * 255));
-        }
 
         private void UpdateLogLayout()
         {
@@ -1462,7 +1372,7 @@ namespace SmartLabelingApp
                 {
                     _ = AutoInferIfEnabledAsync();
                 }
-            }    
+            }
 
             if (_canvas != null && !_canvas.Focused) _canvas.Focus();
         }
@@ -1489,7 +1399,7 @@ namespace SmartLabelingApp
                 await AutoPatchCoreInferIfEnabledAsync();
             else
                 await AutoInferIfEnabledAsync();
-            
+
             _canvas?.Focus();
         }
 
@@ -4378,7 +4288,7 @@ namespace SmartLabelingApp
                             crop = _patchcoreArtifacts.InputSize,
                         });
                     }
-                    
+
                     swPre.Stop();
 
                     // 2) ONNX 실행 (layer3)
