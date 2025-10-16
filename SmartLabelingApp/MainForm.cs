@@ -46,7 +46,7 @@ namespace SmartLabelingApp
         private const string DEFAULT_MODEL_PATH = @"D:\SLA_Model\SEG.onnx";
         private string _currentModelName = "UNKNOWN";
         private System.Threading.CancellationTokenSource _autoInferCts;
-        public  static string _currentRunTypeName = "CPU";
+        public static string _currentRunTypeName = "CPU";
 
         private const int MODEL_HEADER_H = 39;
         private const int MODEL_HEADER_Y = -43;
@@ -4943,7 +4943,7 @@ namespace SmartLabelingApp
             return "Default";
         }
         #endregion
-        #region ColorMap 관련 기능 구현
+        #region 7) ColorMap 관련 기능 구현
 
         #region Fields
         private Bitmap _colorMapOriginal;      // 원본
@@ -5295,15 +5295,12 @@ namespace SmartLabelingApp
                                     int sx = Math.Min(_dst32.Width - 1, x * step);
                                     ushort val = src16[srcOfs + sx];
                                     int idx = (int)(((long)val * scaleMul + scaleAdd) >> 16);
+
+                                    // 코그넥스 룰: 윈도우 밖(≤min, ≥max) → 검정
                                     if (idx <= 0 || idx >= 255)
-                                    {
-                                        // 윈도우 밖(≤min 또는 ≥max)은 코그넥스처럼 검정
                                         drow[x] = 0xFF000000u;
-                                    }
                                     else
-                                    {
                                         drow[x] = _palette256[idx];
-                                    }
                                 }
                             }
                         }
@@ -5320,8 +5317,12 @@ namespace SmartLabelingApp
                                     int sx = Math.Min(_dst32.Width - 1, x * step);
                                     byte val = src8[srcOfs + sx];
                                     int idx = (int)(((long)val * scaleMul + scaleAdd) >> 16);
-                                    if ((uint)idx > 255) idx = idx < 0 ? 0 : 255;
-                                    drow[x] = _palette256[idx];
+
+                                    // ★ 수정: 8bit도 동일 규칙 적용 (≤0 || ≥255 → 검정)
+                                    if (idx <= 0 || idx >= 255)
+                                        drow[x] = 0xFF000000u;
+                                    else
+                                        drow[x] = _palette256[idx];
                                 }
                             }
                         }
@@ -5343,6 +5344,7 @@ namespace SmartLabelingApp
             }
             finally { _cmBusy = false; }
         }
+
 
         // ───────────────────────────────────────────────────────────────
         // Full (원본 해상도 적용)
@@ -5378,7 +5380,6 @@ namespace SmartLabelingApp
                         if (_srcIs16)
                         {
                             var src16 = _src16;
-                            // 16bit는 병렬이 이득
                             Parallel.For(0, h, y =>
                             {
                                 uint* drow = (uint*)(dbd.Scan0 + y * dbd.Stride);
@@ -5387,8 +5388,11 @@ namespace SmartLabelingApp
                                 {
                                     ushort val = src16[ofs + x];
                                     int idx = (int)(((long)val * scaleMul + scaleAdd) >> 16);
-                                    if ((uint)idx > 255) idx = idx < 0 ? 0 : 255;
-                                    drow[x] = _palette256[idx];
+
+                                    if (idx <= 0 || idx >= 255)
+                                        drow[x] = 0xFF000000u;
+                                    else
+                                        drow[x] = _palette256[idx];
                                 }
                             });
                         }
@@ -5404,8 +5408,12 @@ namespace SmartLabelingApp
                                 {
                                     byte val = src8[ofs + x];
                                     int idx = (int)(((long)val * scaleMul + scaleAdd) >> 16);
-                                    if ((uint)idx > 255) idx = idx < 0 ? 0 : 255;
-                                    drow[x] = _palette256[idx];
+
+                                    // ★ 수정: 8bit도 윈도우 밖은 검정
+                                    if (idx <= 0 || idx >= 255)
+                                        drow[x] = 0xFF000000u;
+                                    else
+                                        drow[x] = _palette256[idx];
                                 }
                             }
                         }
@@ -5419,6 +5427,7 @@ namespace SmartLabelingApp
             }
             finally { _cmBusy = false; }
         }
+
 
         #endregion
 
