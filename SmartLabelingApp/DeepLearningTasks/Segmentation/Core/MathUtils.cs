@@ -57,6 +57,9 @@ namespace SmartLabelingApp
             return v < lo ? lo : (v > hi ? hi : v);
         }
 
+        /// <summary>0~1 범위로 고정 (double)</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static double Clamp(double v) => (v < 0) ? 0 : (v > 1 ? 1 : v);
 
         /// <summary>0~255 범위로 고정하고 byte로 변환</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

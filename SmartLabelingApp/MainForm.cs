@@ -12,12 +12,13 @@ using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Windows.Documents;
 using System.Windows.Forms;
-using static TheArtOfDevHtmlRenderer.Adapters.RGraphicsPath;
+using System.Windows.Media.Imaging;
 
 namespace SmartLabelingApp
 {
@@ -46,9 +47,6 @@ namespace SmartLabelingApp
         private string _currentModelName = "UNKNOWN";
         private System.Threading.CancellationTokenSource _autoInferCts;
         public  static string _currentRunTypeName = "CPU";
-
-        private Bitmap _colorMapOriginal;   // 원본 백업
-        private Color[] _jetLut16 = new Color[65536]; // LUT 캐시
 
         private const int MODEL_HEADER_H = 39;
         private const int MODEL_HEADER_Y = -43;
@@ -1093,23 +1091,6 @@ namespace SmartLabelingApp
 
             UpdateLogLayout();
         }
-        private void OnColorMapClick()
-        {
-            if (_canvas?.Image == null) return;
-
-            var src = _canvas.Image as Bitmap;
-            if (src == null) return;
-
-            // 원본 백업
-            _colorMapOriginal?.Dispose();
-            _colorMapOriginal = (Bitmap)src.Clone();
-
-            using (var dlg = new ColorMapWindow())
-            {
-                dlg.ShowDialog(this);
-            }
-        }
-
 
         private void UpdateLogLayout()
         {
@@ -4961,8 +4942,486 @@ namespace SmartLabelingApp
             }
             return "Default";
         }
+        #endregion
+        #region ColorMap 관련 기능 구현
+
+        #region Fields
+        private Bitmap _colorMapOriginal;      // 원본
+        private bool _srcIs16;                 // 비트 깊이 (실제 처리 기준)
+        private byte[] _src8;                  // 8bit intensity
+        private ushort[] _src16;               // 16bit intensity
+
+        private Bitmap _dst32;                 // 표시용 버퍼
+        private Bitmap _preview32;             // 프리뷰 버퍼
+        private uint[] _palette256;            // LUT (256 팔레트)
+        private int _lastMinFull = -1, _lastMaxFull = -1;
+        private int _lastMinPrev = -1, _lastMaxPrev = -1;
+
+        private ColorMapWindow _colorMapWin;
+        private System.Windows.Forms.Timer _liveThrottle;
+        private volatile ushort _pendingMin, _pendingMax;
+        private volatile bool _isDragging;
+        private volatile bool _cmBusy;
+        private int _previewStep = 4;          // 기본 다운샘플 배수 (16bit)
+        private Image _lastBoundSource;
+        #endregion
+
+        private static void Log(string msg) => Trace.WriteLine($"[ColorMap] {DateTime.Now:HH:mm:ss.fff} {msg}");
+
+        // ───────────────────────────────────────────────────────────────
+        // 진입점
+        // ───────────────────────────────────────────────────────────────
+        private void OnColorMapClick(object sender = null, EventArgs e = null)
+        {
+            if (_canvas?.Image == null) return;
+            _canvas.Image.Tag = _currentImagePath;
+
+            var cur = _canvas.Image as Bitmap;
+            // ⚠️ GDI+는 16bit Gray라도 32bppArgb로 올라옴 → 여기서 비트판단 금지
+            // 실제 비트 판단은 BuildIntensityCache에서 WIC로 수행함.
+
+            // ✅ 소스가 없었거나 (해상도/레퍼런스) 바뀌었으면 완전 리셋
+            if (_colorMapOriginal == null
+                || !_colorMapOriginal.Size.Equals(cur.Size)
+                || !ReferenceEquals(_lastBoundSource, _canvas.Image))
+            {
+                ResetColorMapStateForNewSource(_canvas.Image);
+                _lastBoundSource = _canvas.Image;
+            }
+
+            // 컬러맵 창 생성(한 번)
+            if (_colorMapWin == null || _colorMapWin.IsDisposed)
+            {
+                _colorMapWin = new ColorMapWindow();
+                _colorMapWin.FormClosing += (s, ev) => { ev.Cancel = true; _colorMapWin.Hide(); };
+
+                // 실시간 프리뷰/드래그 종료
+                _colorMapWin.OnLiveUpdate = (min, max) => { _pendingMin = min; _pendingMax = max; _isDragging = true; };
+                _colorMapWin.OnColorChanged = _ => { _isDragging = false; ApplyColorMapFull(_colorMapWin.SelectedMin, _colorMapWin.SelectedMax); };
+
+                _liveThrottle = new System.Windows.Forms.Timer { Interval = 50 };
+                _liveThrottle.Tick += (s, ev) => { if (_isDragging) ApplyColorMapPreview(_pendingMin, _pendingMax); };
+                _liveThrottle.Start();
+            }
+
+            // ✅ 현재 실제 비트깊이에 맞게 "매번" UI 범위 재설정
+            _colorMapWin.ConfigureForBitDepth(_srcIs16 ? 16 : 8);
+            _colorMapWin.SetInitialRange(0, (ushort)(_srcIs16 ? 65535 : 255));
+
+            // 첫 적용
+            ApplyColorMapFull(_colorMapWin.SelectedMin, _colorMapWin.SelectedMax);
+            _colorMapWin.Show();
+            _colorMapWin.Activate();
+        }
+
+        // ───────────────────────────────────────────────────────────────
+        // 강도 캐시 구축 (WIC로 16bit 감지/로딩 → 실패 시 G채널 8bit)
+        // ───────────────────────────────────────────────────────────────
+        private void BuildIntensityCache(Bitmap src)
+        {
+            int w = src.Width, h = src.Height;
+
+            // 1) WIC 경로 시도: Gray16이면 ushort[] 로 로딩
+            if (!string.IsNullOrEmpty(_currentImagePath) &&
+                TryLoadGray16WithWIC(_currentImagePath, out var buf16, out int ww, out int hh))
+            {
+                _srcIs16 = true;
+                _src16 = buf16;
+                w = ww; h = hh;
+
+                // 표시 버퍼는 src.Size에 맞추지만, 로딩 크기와 다르면 맞춰줌
+                if (_dst32 == null || _dst32.Width != w || _dst32.Height != h)
+                {
+                    BuildOrResizeDst(w, h);
+                    BuildOrResizePreview(w, h, _previewStep);
+                }
+                EnsurePalette256();
+                return;
+            }
+
+            // 2) 실패 → 8bit 경로(G 채널)로 폴백
+            _srcIs16 = false;
+
+            var r = new Rectangle(Point.Empty, src.Size);
+            BitmapData bd = src.LockBits(r, ImageLockMode.ReadOnly, src.PixelFormat);
+            int bpp = Image.GetPixelFormatSize(src.PixelFormat) / 8;
+
+            try
+            {
+                _src8 = new byte[w * h];
+                unsafe
+                {
+                    byte* sbase = (byte*)bd.Scan0;
+                    Parallel.For(0, h, y =>
+                    {
+                        byte* srow = sbase + y * bd.Stride;
+                        int ofs = y * w;
+
+                        for (int x = 0; x < w; x++)
+                        {
+                            // B,G,R 순서(Format32bppArgb / 24bppRgb 모두 BGR 순)
+                            byte b = srow[x * bpp + 0];
+                            byte g = srow[x * bpp + 1];
+                            byte r8 = srow[x * bpp + 2];
+
+                            // BT.601 luma (정수): (77*R + 150*G + 29*B + 128) >> 8
+                            _src8[ofs + x] = (byte)((r8 * 77 + g * 150 + b * 29 + 128) >> 8);
+                        }
+                    });
+                }
+            }
+            finally { src.UnlockBits(bd); }
+
+            EnsurePalette256();
+        }
+        private bool TryLoadGray16WithWIC(string path, out ushort[] data, out int width, out int height)
+        {
+            data = null; width = height = 0;
+
+            try
+            {
+                using (var fs = System.IO.File.OpenRead(path))
+                {
+                    var dec = System.Windows.Media.Imaging.BitmapDecoder.Create(
+                        fs,
+                        System.Windows.Media.Imaging.BitmapCreateOptions.PreservePixelFormat,
+                        System.Windows.Media.Imaging.BitmapCacheOption.OnLoad);
+
+                    // ★ 공통 기반형으로 선언 (BitmapSource)
+                    System.Windows.Media.Imaging.BitmapSource src = dec.Frames[0];
+
+                    // Gray16 여부 확인
+                    bool isGray16 = src.Format == System.Windows.Media.PixelFormats.Gray16;
+
+                    // 16bpp면 Gray16으로 강제 변환 시도
+                    if (!isGray16 && src.Format.BitsPerPixel == 16)
+                    {
+                        try
+                        {
+                            src = new System.Windows.Media.Imaging.FormatConvertedBitmap(
+                                src,
+                                System.Windows.Media.PixelFormats.Gray16,
+                                null, 0);
+                            isGray16 = true;
+                        }
+                        catch { isGray16 = false; }
+                    }
+
+                    if (!isGray16) return false;
+
+                    width = src.PixelWidth;
+                    height = src.PixelHeight;
+                    int stride = (width * 16 + 7) / 8; // 2 * width 정렬
+
+                    var bytes = new byte[stride * height];
+                    src.CopyPixels(bytes, stride, 0);
+
+                    // byte[] → ushort[] (little-endian)
+                    data = new ushort[width * height];
+                    System.Buffer.BlockCopy(bytes, 0, data, 0, width * height * sizeof(ushort));
+                    return true;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+
+        // ───────────────────────────────────────────────────────────────
+        // 버퍼 준비
+        // ───────────────────────────────────────────────────────────────
+        private void BuildOrResizeDst(int w, int h)
+        {
+            bool needNew = true;
+            if (_dst32 != null)
+            {
+                try { needNew = !(_dst32.Width == w && _dst32.Height == h); }
+                catch { needNew = true; } // 핸들 손상 시
+            }
+            if (!needNew) return;
+
+            // ✅ Canvas에서 먼저 분리 후 Dispose (중요)
+            if (ReferenceEquals(_canvas?.Image, _dst32)) _canvas.Image = null;
+            try { _dst32?.Dispose(); } catch { /* ignore */ }
+
+            _dst32 = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+
+            // 최초 생성 시 바인딩
+            if (_canvas != null && _canvas.Image == null)
+                _canvas.Image = _dst32;
+        }
+
+        private void BuildOrResizePreview(int w, int h, int step)
+        {
+            int pw = Math.Max(1, w / step);
+            int ph = Math.Max(1, h / step);
+
+            bool needNew = true;
+            if (_preview32 != null)
+            {
+                try { needNew = !(_preview32.Width == pw && _preview32.Height == ph); }
+                catch { needNew = true; }
+            }
+            if (!needNew) return;
+
+            try { _preview32?.Dispose(); } catch { }
+            _preview32 = new Bitmap(pw, ph, PixelFormat.Format32bppArgb);
+        }
+
+        // ───────────────────────────────────────────────────────────────
+        // 256 LUT
+        // ───────────────────────────────────────────────────────────────
+        private void EnsurePalette256()
+        {
+            if (_palette256 != null) return;
+            _palette256 = new uint[256];
+            for (int i = 0; i < 256; i++)
+            {
+                double t = i / 255.0;
+                double r = MathUtils.Clamp(1.5 - Math.Abs(4 * t - 3));
+                double g = MathUtils.Clamp(1.5 - Math.Abs(4 * t - 2));
+                double b = MathUtils.Clamp(1.5 - Math.Abs(4 * t - 1));
+                _palette256[i] = 0xFF000000u
+                               | ((uint)(r * 255) << 16)
+                               | ((uint)(g * 255) << 8)
+                               | (uint)(b * 255);
+            }
+        }
+
+        // ───────────────────────────────────────────────────────────────
+        // 소스 교체 전체 리셋
+        // ───────────────────────────────────────────────────────────────
+        private void ResetColorMapStateForNewSource(Image newSrc)
+        {
+            // Canvas에서 분리 후 버퍼 폐기
+            if (ReferenceEquals(_canvas?.Image, _dst32)) _canvas.Image = null;
+
+            try { _dst32?.Dispose(); } catch { }
+            try { _preview32?.Dispose(); } catch { }
+            try { _colorMapOriginal?.Dispose(); } catch { }
+
+            _dst32 = null;
+            _preview32 = null;
+            _colorMapOriginal = null;
+
+            _src8 = null;
+            _src16 = null;
+
+            _palette256 = null;
+            _lastMinFull = _lastMaxFull = _lastMinPrev = _lastMaxPrev = -1;
+
+            _cmBusy = false;
+            _isDragging = false;
+
+            // 새 원본 채택 + 캐시 재구축
+            _colorMapOriginal = (Bitmap)newSrc.Clone();
+            BuildIntensityCache(_colorMapOriginal); // 내부에서 _srcIs16 판정/로딩 수행
+            BuildOrResizeDst(_colorMapOriginal.Width, _colorMapOriginal.Height);
+            BuildOrResizePreview(_colorMapOriginal.Width, _colorMapOriginal.Height, _previewStep);
+
+            // 화면 바인딩(최초 1회만)
+            if (!ReferenceEquals(_canvas.Image, _dst32))
+                _canvas.Image = _dst32;
+        }
+
+        // ───────────────────────────────────────────────────────────────
+        // 스케일 계산(8/16bit 자동 구분)
+        // ───────────────────────────────────────────────────────────────
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void ComputeScale16_16(ushort minU, ushort maxU, bool is16bit,
+                                              out int scaleMul, out long scaleAdd)
+        {
+            int min = minU;
+            int max = Math.Max(min + 1, (int)maxU);
+            int range = max - min;
+
+            // ✅ LUT 인덱스는 항상 0~255
+            // 16bit는 입력값이 크므로 그대로 정규화,
+            // 8bit는 입력이 이미 0~255라 단위 보정 필요.
+            double scaleFactor = is16bit ? (255.0 / range) : (255.0 / range);
+            scaleMul = (int)(scaleFactor * 65536.0);
+            scaleAdd = -((long)min * scaleMul);
+        }
+
+
+
+        // ───────────────────────────────────────────────────────────────
+        // Preview (다운샘플)
+        // ───────────────────────────────────────────────────────────────
+        private void ApplyColorMapPreview(ushort minU, ushort maxU)
+        {
+            if (_dst32 == null || _preview32 == null) return;
+
+            // 8bit는 더 거칠게: step 6 (FPS↑), 16bit는 설정값 유지
+            int step = _srcIs16 ? _previewStep : Math.Max(_previewStep, 6);
+            if (_preview32.Width != Math.Max(1, _dst32.Width / step)
+                || _preview32.Height != Math.Max(1, _dst32.Height / step))
+            {
+                BuildOrResizePreview(_dst32.Width, _dst32.Height, step);
+            }
+
+            int dMin = Math.Abs((int)minU - _lastMinPrev);
+            int dMax = Math.Abs((int)maxU - _lastMaxPrev);
+            int threshold = _srcIs16 ? 32 : 1;
+            if (dMin < threshold && dMax < threshold) return;
+            if (_cmBusy) return;
+            _cmBusy = true;
+
+            try
+            {
+                EnsurePalette256();
+                ComputeScale16_16(minU, maxU, _srcIs16, out int scaleMul, out long scaleAdd);
+
+                int pw = _preview32.Width, ph = _preview32.Height;
+                var pr = new Rectangle(Point.Empty, _preview32.Size);
+                BitmapData pbd = _preview32.LockBits(pr, ImageLockMode.WriteOnly, _preview32.PixelFormat);
+
+                try
+                {
+                    unsafe
+                    {
+                        if (_srcIs16)
+                        {
+                            var src16 = _src16;
+                            for (int y = 0; y < ph; y++)
+                            {
+                                uint* drow = (uint*)(pbd.Scan0 + y * pbd.Stride);
+                                int sy = Math.Min(_dst32.Height - 1, y * step);
+                                int srcOfs = sy * _dst32.Width;
+                                for (int x = 0; x < pw; x++)
+                                {
+                                    int sx = Math.Min(_dst32.Width - 1, x * step);
+                                    ushort val = src16[srcOfs + sx];
+                                    int idx = (int)(((long)val * scaleMul + scaleAdd) >> 16);
+                                    if (idx <= 0 || idx >= 255)
+                                    {
+                                        // 윈도우 밖(≤min 또는 ≥max)은 코그넥스처럼 검정
+                                        drow[x] = 0xFF000000u;
+                                    }
+                                    else
+                                    {
+                                        drow[x] = _palette256[idx];
+                                    }
+                                }
+                            }
+                        }
+                        else
+                        {
+                            var src8 = _src8;
+                            for (int y = 0; y < ph; y++)
+                            {
+                                uint* drow = (uint*)(pbd.Scan0 + y * pbd.Stride);
+                                int sy = Math.Min(_dst32.Height - 1, y * step);
+                                int srcOfs = sy * _dst32.Width;
+                                for (int x = 0; x < pw; x++)
+                                {
+                                    int sx = Math.Min(_dst32.Width - 1, x * step);
+                                    byte val = src8[srcOfs + sx];
+                                    int idx = (int)(((long)val * scaleMul + scaleAdd) >> 16);
+                                    if ((uint)idx > 255) idx = idx < 0 ? 0 : 255;
+                                    drow[x] = _palette256[idx];
+                                }
+                            }
+                        }
+                    }
+                }
+                finally { _preview32.UnlockBits(pbd); }
+
+                // 업스케일 Blit
+                using (var g = Graphics.FromImage(_dst32))
+                {
+                    g.CompositingMode = CompositingMode.SourceCopy;
+                    g.InterpolationMode = InterpolationMode.NearestNeighbor;
+                    g.PixelOffsetMode = PixelOffsetMode.Half;
+                    g.DrawImage(_preview32, new Rectangle(0, 0, _dst32.Width, _dst32.Height));
+                }
+
+                _canvas.Invalidate();
+                _lastMinPrev = minU; _lastMaxPrev = maxU;
+            }
+            finally { _cmBusy = false; }
+        }
+
+        // ───────────────────────────────────────────────────────────────
+        // Full (원본 해상도 적용)
+        // ───────────────────────────────────────────────────────────────
+        private void ApplyColorMapFull(ushort minU, ushort maxU)
+        {
+            if (_dst32 == null) return;
+            try { var _ = _dst32.Width; } // 핸들 검증
+            catch
+            {
+                Log("⚠️ _dst32 손상 → 재생성");
+                BuildOrResizeDst(_colorMapOriginal.Width, _colorMapOriginal.Height);
+                return;
+            }
+
+            if (_lastMinFull == (int)minU && _lastMaxFull == (int)maxU) return;
+            if (_cmBusy) return;
+            _cmBusy = true;
+
+            try
+            {
+                EnsurePalette256();
+                ComputeScale16_16(minU, maxU, _srcIs16, out int scaleMul, out long scaleAdd);
+
+                int w = _dst32.Width, h = _dst32.Height;
+                var r = new Rectangle(Point.Empty, _dst32.Size);
+                BitmapData dbd = _dst32.LockBits(r, ImageLockMode.WriteOnly, _dst32.PixelFormat);
+
+                try
+                {
+                    unsafe
+                    {
+                        if (_srcIs16)
+                        {
+                            var src16 = _src16;
+                            // 16bit는 병렬이 이득
+                            Parallel.For(0, h, y =>
+                            {
+                                uint* drow = (uint*)(dbd.Scan0 + y * dbd.Stride);
+                                int ofs = y * w;
+                                for (int x = 0; x < w; x++)
+                                {
+                                    ushort val = src16[ofs + x];
+                                    int idx = (int)(((long)val * scaleMul + scaleAdd) >> 16);
+                                    if ((uint)idx > 255) idx = idx < 0 ? 0 : 255;
+                                    drow[x] = _palette256[idx];
+                                }
+                            });
+                        }
+                        else
+                        {
+                            var src8 = _src8;
+                            // 8bit는 단일 스레드가 더 빠름
+                            for (int y = 0; y < h; y++)
+                            {
+                                uint* drow = (uint*)(dbd.Scan0 + y * dbd.Stride);
+                                int ofs = y * w;
+                                for (int x = 0; x < w; x++)
+                                {
+                                    byte val = src8[ofs + x];
+                                    int idx = (int)(((long)val * scaleMul + scaleAdd) >> 16);
+                                    if ((uint)idx > 255) idx = idx < 0 ? 0 : 255;
+                                    drow[x] = _palette256[idx];
+                                }
+                            }
+                        }
+                    }
+                }
+                finally { _dst32.UnlockBits(dbd); }
+
+                _canvas.Invalidate();
+                _lastMinFull = minU; _lastMaxFull = maxU;
+                _lastMinPrev = minU; _lastMaxPrev = maxU;
+            }
+            finally { _cmBusy = false; }
+        }
 
         #endregion
+
         private void MainForm_FormClosed(object sender, FormClosedEventArgs e)
         {
             if (_aiRainbowBg != null) { _aiRainbowBg.Dispose(); _aiRainbowBg = null; }
