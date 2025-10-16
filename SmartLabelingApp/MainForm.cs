@@ -4964,6 +4964,9 @@ namespace SmartLabelingApp
         private volatile bool _cmBusy;
         private int _previewStep = 4;          // 기본 다운샘플 배수 (16bit)
         private Image _lastBoundSource;
+
+        private uint[] _lut8_colors;          // 길이 256, val(0..255) → ARGB 색
+        private ushort _lut8_min, _lut8_max;  // 캐시된 LUT의 min/max
         #endregion
 
         private static void Log(string msg) => Trace.WriteLine($"[ColorMap] {DateTime.Now:HH:mm:ss.fff} {msg}");
@@ -5012,6 +5015,43 @@ namespace SmartLabelingApp
             ApplyColorMapFull(_colorMapWin.SelectedMin, _colorMapWin.SelectedMax);
             _colorMapWin.Show();
             _colorMapWin.Activate();
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private uint[] GetOrBuildLut8(ushort minU, ushort maxU)
+        {
+            // 캐시 히트
+            if (_lut8_colors != null && _lut8_min == minU && _lut8_max == maxU)
+                return _lut8_colors;
+
+            EnsurePalette256(); // _palette256 준비
+
+            // min/max 보정
+            int min = minU;
+            int max = Math.Max(min + 1, (int)maxU);
+            int range = max - min;
+
+            // 고정소수점 스케일 (16비트 정밀도)
+            int scaleMul = (int)((255.0 / range) * 65536.0);
+            long scaleAdd = -((long)min * scaleMul);
+
+            var lut = _lut8_colors ?? new uint[256];
+
+            for (int v = 0; v < 256; v++)
+            {
+                int idx = (int)(((long)v * scaleMul + scaleAdd) >> 16);
+
+                // 코그넥스 규칙: 윈도우 밖(≤min, ≥max)은 항상 검정
+                if (idx <= 0 || idx >= 255)
+                    lut[v] = 0xFF000000u;
+                else
+                    lut[v] = _palette256[idx];
+            }
+
+            _lut8_colors = lut;
+            _lut8_min = minU;
+            _lut8_max = maxU;
+            return lut;
         }
 
         // ───────────────────────────────────────────────────────────────
@@ -5295,19 +5335,17 @@ namespace SmartLabelingApp
                                     int sx = Math.Min(_dst32.Width - 1, x * step);
                                     ushort val = src16[srcOfs + sx];
                                     int idx = (int)(((long)val * scaleMul + scaleAdd) >> 16);
-
-                                    // 코그넥스 룰: 윈도우 밖(≤min, ≥max) → 검정
-                                    if (idx <= 0 || idx >= 255)
-                                        drow[x] = 0xFF000000u;
-                                    else
-                                        drow[x] = _palette256[idx];
+                                    drow[x] = (idx <= 0 || idx >= 255) ? 0xFF000000u : _palette256[idx];
                                 }
                             }
                         }
                         else
                         {
                             var src8 = _src8;
-                            for (int y = 0; y < ph; y++)
+                            var lut = GetOrBuildLut8(minU, maxU); // ★ 8-bit 성능 핵심
+
+                            // 미세한 이미지라도 드래그 동안 부하가 있으므로 병렬 허용
+                            Parallel.For(0, ph, y =>
                             {
                                 uint* drow = (uint*)(pbd.Scan0 + y * pbd.Stride);
                                 int sy = Math.Min(_dst32.Height - 1, y * step);
@@ -5315,16 +5353,9 @@ namespace SmartLabelingApp
                                 for (int x = 0; x < pw; x++)
                                 {
                                     int sx = Math.Min(_dst32.Width - 1, x * step);
-                                    byte val = src8[srcOfs + sx];
-                                    int idx = (int)(((long)val * scaleMul + scaleAdd) >> 16);
-
-                                    // ★ 수정: 8bit도 동일 규칙 적용 (≤0 || ≥255 → 검정)
-                                    if (idx <= 0 || idx >= 255)
-                                        drow[x] = 0xFF000000u;
-                                    else
-                                        drow[x] = _palette256[idx];
+                                    drow[x] = lut[src8[srcOfs + sx]];
                                 }
-                            }
+                            });
                         }
                     }
                 }
@@ -5344,6 +5375,7 @@ namespace SmartLabelingApp
             }
             finally { _cmBusy = false; }
         }
+
 
 
         // ───────────────────────────────────────────────────────────────
@@ -5388,34 +5420,26 @@ namespace SmartLabelingApp
                                 {
                                     ushort val = src16[ofs + x];
                                     int idx = (int)(((long)val * scaleMul + scaleAdd) >> 16);
-
-                                    if (idx <= 0 || idx >= 255)
-                                        drow[x] = 0xFF000000u;
-                                    else
-                                        drow[x] = _palette256[idx];
+                                    drow[x] = (idx <= 0 || idx >= 255) ? 0xFF000000u : _palette256[idx];
                                 }
                             });
                         }
                         else
                         {
                             var src8 = _src8;
-                            // 8bit는 단일 스레드가 더 빠름
-                            for (int y = 0; y < h; y++)
+                            var lut = GetOrBuildLut8(minU, maxU); // ★ 8-bit 성능 핵심
+
+                            // 8-bit 풀 적용은 단일스레드가 빠른 경우도 있지만,
+                            // 큰 해상도 대비를 위해 병렬 허용(필요 시 취향에 맞게 단일 루프로 변경 가능)
+                            Parallel.For(0, h, y =>
                             {
                                 uint* drow = (uint*)(dbd.Scan0 + y * dbd.Stride);
                                 int ofs = y * w;
                                 for (int x = 0; x < w; x++)
                                 {
-                                    byte val = src8[ofs + x];
-                                    int idx = (int)(((long)val * scaleMul + scaleAdd) >> 16);
-
-                                    // ★ 수정: 8bit도 윈도우 밖은 검정
-                                    if (idx <= 0 || idx >= 255)
-                                        drow[x] = 0xFF000000u;
-                                    else
-                                        drow[x] = _palette256[idx];
+                                    drow[x] = lut[src8[ofs + x]];
                                 }
-                            }
+                            });
                         }
                     }
                 }
@@ -5427,6 +5451,7 @@ namespace SmartLabelingApp
             }
             finally { _cmBusy = false; }
         }
+
 
 
         #endregion
