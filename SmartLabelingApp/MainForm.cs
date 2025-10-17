@@ -43,7 +43,7 @@ namespace SmartLabelingApp
         #endregion
         #region 1) Constants & Static Data (상수/정적 데이터)
 
-        private const string DEFAULT_MODEL_PATH = @"D:\SLA_Model\SEG.onnx";
+        private const string DEFAULT_MODEL_PATH = @"D:\SLA_Model\AnnotationData\best.onnx";
         private string _currentModelName = "UNKNOWN";
         private System.Threading.CancellationTokenSource _autoInferCts;
         public static string _currentRunTypeName = "CPU";
@@ -4133,7 +4133,7 @@ namespace SmartLabelingApp
 
                         var swOverlay = System.Diagnostics.Stopwatch.StartNew();
                         // 공통 오버레이: ONNX 스타일의 그림을 두 백엔드 공통으로
-                        onnxOverlay = OverlayRendererFast.RenderEx(srcCopy, res, overlaysOut: overlays);
+                        onnxOverlay = OverlayRendererFast.RenderEx(srcCopy, res, overlaysOut: overlays, maskThr: 0.8f, alpha: 0.3f);
                         swOverlay.Stop();
 
                         Log($"[ONNX] Inference 완료: ClassCount={res.Dets.Count}개, pre={res.PreMs:F0}ms, infer={res.InferMs:F0}ms, post={res.PostMs:F0}ms");

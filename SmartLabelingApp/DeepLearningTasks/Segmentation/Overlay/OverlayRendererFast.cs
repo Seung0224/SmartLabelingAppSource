@@ -1,7 +1,13 @@
-﻿using System;
+﻿// OverlayRendererFast.cs  (C# 7.3 호환 버전)
+// - Super-sampling + GaussianBlur + Soft-Alpha
+// - EdgeRenderMode: SoftFill / MarchingSquaresAA / CircleFit (기본: CircleFit)
+
+using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Threading.Tasks;
 
@@ -9,49 +15,80 @@ namespace SmartLabelingApp
 {
     public static class OverlayRendererFast
     {
-        /// <summary>
-        /// 공통 오버레이 렌더러
-        /// - fillMask: 비트맵에 직접 마스크 채움(알파 블렌딩)
-        /// - drawOutlines: 외곽선 픽셀을 비트맵에 직접 그림
-        /// - drawBoxes: 박스 테두리를 비트맵에 직접 그림
-        /// - drawScores: 배지(텍스트)는 비트맵에 그리지 않고, overlaysOut(이미지캔버스)로만 생성
-        /// - lineThickness: 박스 테두리와 외곽선 두께(픽셀)
-        /// - scoreScale: (비사용; ImageCanvas가 배지 스타일을 담당) 유지만
-        /// - overlaysOut: ImageCanvas로 전달할 배지 오버레이를 담을 리스트 (null이면 배지 생성 생략)
-        /// - labelProvider: clsId -> 라벨 문자열 (null이면 "cls:{id}")
-        /// </summary>
-        public static Bitmap RenderEx(Bitmap orig, SegResult r, float maskThr = 0.8f, float alpha = 0.45f, bool drawBoxes = false, bool fillMask = true, bool drawOutlines = true,
-            bool drawScores = true, int lineThickness = 1, List<SmartLabelingApp.ImageCanvas.OverlayItem> overlaysOut = null)
+        // ===== 튜너블 옵션 =====
+        private enum EdgeRenderMode { SoftFill, MarchingSquaresAA, CircleFit }
+
+        private const EdgeRenderMode EDGE_MODE = EdgeRenderMode.SoftFill; // 가장 둥글게 보이도록
+        private const bool USE_SOFT_ALPHA = true;
+        private const float SOFT_T0 = 0.40f;
+        private const float SOFT_T1 = 0.70f;
+        private const bool APPLY_GAUSSIAN_BLUR = true; // ROI super-sample 후 블러
+        private const int SUPER_SAMPLE = 2;            // 2~3 권장
+        private const bool LOG_MAPPING = false;
+
+        // ===== 기본 유틸(7.3 호환) =====
+        private static float SmoothStep(float a, float b, float x)
         {
-            if (orig == null) throw new ArgumentNullException(nameof(orig));
-            if (r == null) throw new ArgumentNullException(nameof(r));
+            if (x <= a) return 0f;
+            if (x >= b) return 1f;
+            float t = (x - a) / (b - a);
+            return t * t * (3f - 2f * t);
+        }
+
+        private static int ClampInt(int v, int lo, int hi)
+        {
+            if (v < lo) return lo;
+            if (v > hi) return hi;
+            return v;
+        }
+
+        private static float Clamp01(float v)
+        {
+            if (v < 0f) return 0f;
+            if (v > 1f) return 1f;
+            return v;
+        }
+
+        private static float Sqrtf(float v) { return (float)Math.Sqrt(v); }
+
+        public static Bitmap RenderEx(
+            Bitmap orig,
+            SegResult r,
+            float maskThr = 0.4f,
+            float alpha = 0.45f,
+            bool drawBoxes = false,
+            bool fillMask = true,
+            bool drawOutlines = true, // (주의) AA 모드에서는 내부에서 처리
+            bool drawScores = true,
+            int lineThickness = 1,
+            List<SmartLabelingApp.ImageCanvas.OverlayItem> overlaysOut = null)
+        {
+            if (orig == null) throw new ArgumentNullException("orig");
+            if (r == null) throw new ArgumentNullException("r");
             if (r.Dets == null || r.Dets.Count == 0) return (Bitmap)orig.Clone();
 
-            var over = (Bitmap)orig.Clone();
-            var rectAll = new Rectangle(0, 0, over.Width, over.Height);
-            var data = over.LockBits(rectAll, ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
+            Bitmap over = (Bitmap)orig.Clone();
+            Rectangle rectAll = new Rectangle(0, 0, over.Width, over.Height);
+            BitmapData data = over.LockBits(rectAll, ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
 
             try
             {
                 int maskLenFull = r.MaskW * r.MaskH;
                 float[] maskBuf = ArrayPool<float>.Shared.Rent(maskLenFull);
+
                 try
                 {
-                    // 최소 두께 보정
-                    int thick = Math.Max(1, lineThickness);
-
                     for (int di = 0; di < r.Dets.Count; di++)
                     {
                         var d = r.Dets[di];
 
-                        // 1) 마스크 합성(KHW) → maskBuf에 기록
+                        // 1) proto * coeff 합성 → maskBuf (0..1 가정)
                         MaskSynth.ComputeMask_KHW_NoAlloc(d.Coeff, r.ProtoFlat, r.SegDim, r.MaskW, r.MaskH, maskBuf);
 
-                        // 2) 박스 원본 좌표
-                        var origBox = Postprocess.NetBoxToOriginal(d.Box, r.Scale, r.PadX, r.PadY, r.Resized, r.OrigSize);
+                        // 2) 박스 역매핑
+                        Rectangle origBox = Postprocess.NetBoxToOriginal(d.Box, r.Scale, r.PadX, r.PadY, r.Resized, r.OrigSize);
                         if (origBox == Rectangle.Empty) continue;
 
-                        // 3) ROI 보간 준비
                         int imgW = over.Width, imgH = over.Height;
                         int x0 = Math.Max(0, origBox.X);
                         int y0 = Math.Max(0, origBox.Y);
@@ -60,11 +97,19 @@ namespace SmartLabelingApp
                         if (x1 <= x0 || y1 <= y0) continue;
 
                         int roiW = x1 - x0, roiH = y1 - y0;
-                        var ix0 = new int[roiW]; var ix1 = new int[roiW]; var tx = new float[roiW];
-                        var iy0 = new int[roiH]; var iy1 = new int[roiH]; var ty = new float[roiH];
 
+                        // NetSize 정사각 가정. NetW/NetH 있다면 분리 사용.
                         float scaleW = (float)r.MaskW / r.NetSize;
                         float scaleH = (float)r.MaskH / r.NetSize;
+
+                        if (LOG_MAPPING && di == 0)
+                            Debug.WriteLine("[OverlayRenderer] mask=" + r.MaskW + "x" + r.MaskH
+                                + ", net=" + r.NetSize + ", scaleW=" + scaleW.ToString("F4")
+                                + ", scaleH=" + scaleH.ToString("F4"));
+
+                        // 3) 보간 인덱스/가중치
+                        int[] ix0 = new int[roiW]; int[] ix1 = new int[roiW]; float[] tx = new float[roiW];
+                        int[] iy0 = new int[roiH]; int[] iy1 = new int[roiH]; float[] ty = new float[roiH];
 
                         for (int dx = 0; dx < roiW; dx++)
                         {
@@ -85,70 +130,82 @@ namespace SmartLabelingApp
                             ty[dy] = wy;
                         }
 
-                        // 4) 채움/윤곽선
-                        bool[] bin = (drawOutlines ? new bool[roiW * roiH] : null);
-                        Color color = ColorUtils.ClassColor(d.ClassId);
-                        byte cr = color.R, cg = color.G, cb = color.B;
-                        float a = MathUtils.Clamp(alpha, 0f, 1f);
+                        // 4) ROI bilinear (super-sample → blur → down)
+                        int sw = roiW * SUPER_SAMPLE, sh = roiH * SUPER_SAMPLE;
+                        float[] roiSoft = new float[sw * sh];
 
-                        unsafe
+                        Parallel.For(0, sh, delegate (int yy)
                         {
-                            byte* basePtr = (byte*)data.Scan0;
-                            int stride = data.Stride;
+                            float py = ((float)yy / SUPER_SAMPLE);
+                            int ddy = (int)py;
+                            float fy = py - ddy;
+                            int iy0v = iy0[Math.Min(ddy, roiH - 1)];
+                            int iy1v = iy1[Math.Min(ddy, roiH - 1)];
+                            int mY0 = iy0v * r.MaskW;
+                            int mY1 = iy1v * r.MaskW;
+                            float wy0 = 1f - fy, wy1 = fy;
 
-                            Parallel.For(0, roiH, ddy =>
+                            for (int xx = 0; xx < sw; xx++)
                             {
-                                int y = y0 + ddy;
-                                byte* row = basePtr + y * stride;
-                                int mY0 = iy0[ddy] * r.MaskW;
-                                int mY1 = iy1[ddy] * r.MaskW;
-                                float wy = ty[ddy];
-                                float wy0 = 1f - wy, wy1 = wy;
+                                float px = ((float)xx / SUPER_SAMPLE);
+                                int ddx = (int)px;
+                                float fx = px - ddx;
+                                int ix0v = ix0[Math.Min(ddx, roiW - 1)];
+                                int ix1v = ix1[Math.Min(ddx, roiW - 1)];
+                                float wx0 = 1f - fx, wx1 = fx;
 
-                                for (int ddx = 0; ddx < roiW; ddx++)
+                                float v00 = maskBuf[mY0 + ix0v];
+                                float v10 = maskBuf[mY0 + ix1v];
+                                float v01 = maskBuf[mY1 + ix0v];
+                                float v11 = maskBuf[mY1 + ix1v];
+
+                                float vy0 = v00 * wx0 + v10 * wx1;
+                                float vy1 = v01 * wx0 + v11 * wx1;
+                                roiSoft[yy * sw + xx] = vy0 * wy0 + vy1 * wy1;
+                            }
+                        });
+
+                        if (APPLY_GAUSSIAN_BLUR)
+                            GaussianBlurInplace(roiSoft, sw, sh); // σ≈1 근사
+
+                        float[] roiDown = new float[roiW * roiH];
+                        float invS = 1f / (SUPER_SAMPLE * SUPER_SAMPLE);
+                        for (int dy = 0; dy < roiH; dy++)
+                        {
+                            for (int dx = 0; dx < roiW; dx++)
+                            {
+                                float sum = 0f;
+                                for (int sy = 0; sy < SUPER_SAMPLE; sy++)
                                 {
-                                    int x = x0 + ddx;
-                                    int mX0 = ix0[ddx];
-                                    int mX1 = ix1[ddx];
-                                    float wx = tx[ddx];
-                                    float wx0 = 1f - wx, wx1 = wx;
-
-                                    float v00 = maskBuf[mY0 + mX0];
-                                    float v10 = maskBuf[mY0 + mX1];
-                                    float v01 = maskBuf[mY1 + mX0];
-                                    float v11 = maskBuf[mY1 + mX1];
-                                    float vy0 = v00 * wx0 + v10 * wx1;
-                                    float vy1 = v01 * wx0 + v11 * wx1;
-                                    float v = vy0 * wy0 + vy1 * wy1;
-
-                                    bool pass = (v >= maskThr);
-                                    if (bin != null) bin[ddy * roiW + ddx] = pass;
-
-                                    if (!fillMask || !pass) continue;
-
-                                    byte* px = row + x * 4; // BGRA
-                                    int b = px[0], g = px[1], rch = px[2];
-                                    px[2] = (byte)(rch + (cr - rch) * a);
-                                    px[1] = (byte)(g + (cg - g) * a);
-                                    px[0] = (byte)(b + (cb - b) * a);
+                                    for (int sx = 0; sx < SUPER_SAMPLE; sx++)
+                                    {
+                                        int idx = (dy * SUPER_SAMPLE + sy) * sw + (dx * SUPER_SAMPLE + sx);
+                                        sum += roiSoft[idx];
+                                    }
                                 }
-                            });
+                                roiDown[dy * roiW + dx] = sum * invS;
+                            }
                         }
 
-                        if (drawOutlines && bin != null)
-                            DrawOutlineOnLockedBitmap(data, x0, y0, roiW, roiH, bin, color, thick);
+                        // 5) 색상/경계 렌더
+                        Color color = ColorUtils.ClassColor(d.ClassId);
+                        float aEffBase = (alpha < 0f) ? 0f : ((alpha > 1f) ? 1f : alpha);
 
-                        // 5) 박스 테두리(픽셀) 그리기
+                        if (EDGE_MODE == EdgeRenderMode.SoftFill)
+                        {
+                            SoftFill(over, data, x0, y0, roiW, roiH, roiDown, color, aEffBase, maskThr, fillMask);
+                        }
+
+                        // 6) 박스/배지(선택)
                         if (drawBoxes)
-                            DrawBoxOnLockedBitmap(data, origBox, color, thick, over.Width, over.Height);
+                            DrawBoxOnLockedBitmap(data, origBox, color, Math.Max(1, lineThickness), over.Width, over.Height);
 
-                        // 6) 배지(ImageCanvas용) 오버레이 생성만 (비트맵에 글씨 그리지 않음)
                         if (drawScores && overlaysOut != null)
                         {
                             overlaysOut.Add(new SmartLabelingApp.ImageCanvas.OverlayItem
                             {
                                 Kind = SmartLabelingApp.ImageCanvas.OverlayKind.Badge,
-                                Text = $"[{d.ClassId}]: {d.Score:0.00}",
+                                Text = "[" + d.ClassId + "]: " + d.Score.ToString("0.00"),
                                 BoxImg = origBox,
                                 StrokeColor = color
                             });
@@ -168,79 +225,273 @@ namespace SmartLabelingApp
             return over;
         }
 
-        // ==== 저수준 픽셀 유틸 ====
+        // ===== SoftFill =====
+        private static unsafe void SoftFill(
+            Bitmap over, BitmapData data, int x0, int y0, int roiW, int roiH,
+            float[] roiDown, Color color, float alpha, float maskThr, bool fillMask)
+        {
+            if (!fillMask) return;
 
-        // 외곽선(윤곽) 픽셀 칠하기 — lineThickness(>=1) 적용
-        private static unsafe void DrawOutlineOnLockedBitmap(
-            BitmapData data, int x0, int y0, int roiW, int roiH,
-            bool[] bin, Color color, int lineThickness)
+            byte cr = color.R, cg = color.G, cb = color.B;
+            byte* basePtr = (byte*)data.Scan0;
+            int stride = data.Stride;
+
+            Parallel.For(0, roiH, delegate (int ddy)
+            {
+                int y = y0 + ddy;
+                byte* row = basePtr + y * stride;
+
+                for (int ddx = 0; ddx < roiW; ddx++)
+                {
+                    float v = roiDown[ddy * roiW + ddx];
+
+                    float aEff = USE_SOFT_ALPHA
+                        ? alpha * SmoothStep(SOFT_T0, SOFT_T1, v)
+                        : ((v >= maskThr) ? alpha : 0f);
+
+                    if (aEff <= 0f) continue;
+
+                    int x = x0 + ddx;
+                    byte* px = row + x * 4; // BGRA
+                    int b = px[0], g = px[1], rch = px[2];
+                    px[2] = (byte)(rch + (cr - rch) * aEff);
+                    px[1] = (byte)(g + (cg - g) * aEff);
+                    px[0] = (byte)(b + (cb - b) * aEff);
+                }
+            });
+        }
+
+        // ===== Marching Squares (간단 등고선) =====
+        private static List<PointF> ExtractIsoContour(float[] f, int w, int h, float thr)
+        {
+            List<PointF> pts = new List<PointF>(w + h);
+
+            for (int y = 0; y < h - 1; y++)
+            {
+                for (int x = 0; x < w - 1; x++)
+                {
+                    int i00 = y * w + x, i10 = i00 + 1, i01 = i00 + w, i11 = i01 + 1;
+                    float v00 = f[i00] - thr, v10 = f[i10] - thr, v01 = f[i01] - thr, v11 = f[i11] - thr;
+                    int mask = ((v00 > 0) ? 1 : 0) | ((v10 > 0) ? 2 : 0) | ((v01 > 0) ? 4 : 0) | ((v11 > 0) ? 8 : 0);
+                    if (mask == 0 || mask == 15) continue;
+
+                    // edge t 보간: a / (a - b)
+                    Func<float, float, float> LerpT = delegate (float a, float b) { return a / (a - b); };
+
+                    PointF? eL = null, eR = null, eT = null, eB = null;
+                    if ((((mask & 1) != 0) != ((mask & 4) != 0)))
+                    {
+                        float t = LerpT(v00, v01);
+                        eL = new PointF(x, y + t);
+                    }
+                    if ((((mask & 2) != 0) != ((mask & 8) != 0)))
+                    {
+                        float t = LerpT(v10, v11);
+                        eR = new PointF(x + 1, y + t);
+                    }
+                    if ((((mask & 1) != 0) != ((mask & 2) != 0)))
+                    {
+                        float t = LerpT(v00, v10);
+                        eT = new PointF(x + t, y);
+                    }
+                    if ((((mask & 4) != 0) != ((mask & 8) != 0)))
+                    {
+                        float t = LerpT(v01, v11);
+                        eB = new PointF(x + t, y + 1);
+                    }
+
+                    if (eT.HasValue) pts.Add(eT.Value);
+                    if (eR.HasValue) pts.Add(eR.Value);
+                    if (eB.HasValue) pts.Add(eB.Value);
+                    if (eL.HasValue) pts.Add(eL.Value);
+                }
+            }
+            return pts;
+        }
+
+        // Chaikin corner cutting
+        private static List<PointF> ChaikinSmooth(IReadOnlyList<PointF> src, int iters, bool closed)
+        {
+            if (src == null || src.Count < 4) return (src != null) ? new List<PointF>(src) : new List<PointF>();
+            List<PointF> cur = new List<PointF>(src);
+
+            for (int it = 0; it < iters; it++)
+            {
+                List<PointF> nxt = new List<PointF>(cur.Count * 2);
+                int n = cur.Count;
+                int end = closed ? n : n - 1;
+
+                for (int i = 0; i < end; i++)
+                {
+                    PointF p0 = cur[i];
+                    PointF p1 = cur[(i + 1) % n];
+                    PointF q = new PointF(p0.X * 0.75f + p1.X * 0.25f, p0.Y * 0.75f + p1.Y * 0.25f);
+                    PointF r = new PointF(p0.X * 0.25f + p1.X * 0.75f, p0.Y * 0.25f + p1.Y * 0.75f);
+                    nxt.Add(q); nxt.Add(r);
+                }
+                if (!closed) nxt.Add(cur[cur.Count - 1]);
+                cur = nxt;
+            }
+            return cur;
+        }
+
+        // 간단 Kasa 원 맞춤(ROI 좌표계) — out 파라미터로 반환(C# 7.3 호환)
+        private static void FitCircleKasa(float[] f, int w, int h, float tLow, out float cx, out float cy, out float r)
+        {
+            double sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, sr = 0, n = 0;
+
+            for (int y = 0; y < h; y++)
+            {
+                int row = y * w;
+                for (int x = 0; x < w; x++)
+                {
+                    float v = f[row + x];
+                    if (v < tLow) continue;
+
+                    double xd = x, yd = y;
+                    sx += xd; sy += yd;
+                    sxx += xd * xd; syy += yd * yd;
+                    sxy += xd * yd;
+                    sr += (xd * xd + yd * yd);
+                    n += 1.0;
+                }
+            }
+
+            if (n < 10)
+            {
+                cx = w * 0.5f; cy = h * 0.5f; r = Math.Min(w, h) * 0.45f; return;
+            }
+
+            double A11 = sxx, A12 = sxy, A21 = sxy, A22 = syy;
+            double B1 = sr * 0.5, B2 = sr * 0.5;
+            double det = (A11 * A22 - A12 * A21);
+
+            if (Math.Abs(det) < 1e-6)
+            {
+                cx = w * 0.5f; cy = h * 0.5f; r = Math.Min(w, h) * 0.45f; return;
+            }
+
+            double cxD = (B1 * A22 - B2 * A12) / det;
+            double cyD = (A11 * B2 - A21 * B1) / det;
+
+            double rSum = 0, cnt = 0;
+            for (int y = 0; y < h; y++)
+            {
+                int row = y * w;
+                for (int x = 0; x < w; x++)
+                {
+                    float v = f[row + x];
+                    if (v < tLow) continue;
+                    double dx = x - cxD, dy = y - cyD;
+                    rSum += Math.Sqrt(dx * dx + dy * dy);
+                    cnt++;
+                }
+            }
+
+            cx = (float)cxD; cy = (float)cyD;
+            r = (cnt > 0) ? (float)(rSum / cnt) : Math.Min(w, h) * 0.45f;
+        }
+
+        // 원형 소프트 경계 채우기(BGRA)
+        private static unsafe void BlendFilledCircleOnLockedBitmap(
+            BitmapData data, int x0, int y0,
+            float cx, float cy, float radius,
+            Color color, float alphaOuter, float edgeSoftnessPx)
         {
             byte* basePtr = (byte*)data.Scan0;
             int stride = data.Stride;
             byte cr = color.R, cg = color.G, cb = color.B;
 
-            int half = lineThickness / 2;
+            int xmin = Math.Max(0, x0 + (int)Math.Floor(cx - radius - 2));
+            int xmax = Math.Min(data.Width - 1, x0 + (int)Math.Ceiling(cx + radius + 2));
+            int ymin = Math.Max(0, y0 + (int)Math.Floor(cy - radius - 2));
+            int ymax = Math.Min(data.Height - 1, y0 + (int)Math.Ceiling(cy + radius + 2));
 
-            for (int dy = 0; dy < roiH; dy++)
+            float R = radius;
+            float edge = (edgeSoftnessPx < 0.5f) ? 0.5f : edgeSoftnessPx;
+
+            for (int y = ymin; y <= ymax; y++)
             {
-                for (int dx = 0; dx < roiW; dx++)
+                byte* row = basePtr + y * stride;
+                for (int x = xmin; x <= xmax; x++)
                 {
-                    int idx = dy * roiW + dx;
-                    if (!bin[idx]) continue;
+                    float rx = (x - x0) - cx + 0.5f;
+                    float ry = (y - y0) - cy + 0.5f;
+                    float d = Sqrtf(rx * rx + ry * ry);
 
-                    bool edge = false;
-                    // 4-neighbor
-                    if (dx == 0 || !bin[idx - 1]) edge = true;
-                    else if (dx == roiW - 1 || !bin[idx + 1]) edge = true;
-                    else if (dy == 0 || !bin[idx - roiW]) edge = true;
-                    else if (dy == roiH - 1 || !bin[idx + roiW]) edge = true;
-
-                    if (!edge) continue;
-
-                    // 두께 만큼 주변 픽셀도 채우기 (정사각 커널)
-                    int pxX = x0 + dx;
-                    int pxY = y0 + dy;
-
-                    for (int oy = -half; oy <= half; oy++)
+                    float a = 0f;
+                    if (d <= R - edge) a = alphaOuter;
+                    else if (d <= R + edge)
                     {
-                        int yy = pxY + oy;
-                        if (yy < 0 || yy >= data.Height) continue;
-
-                        byte* row = basePtr + yy * stride;
-
-                        for (int ox = -half; ox <= half; ox++)
-                        {
-                            int xx = pxX + ox;
-                            if (xx < 0 || xx >= data.Width) continue;
-
-                            byte* p = row + xx * 4; // BGRA
-                            p[2] = cr; p[1] = cg; p[0] = cb;
-                        }
+                        float t = 1f - ((d - (R - edge)) / (2f * edge)); // 1..0
+                        if (t < 0f) t = 0f; else if (t > 1f) t = 1f;
+                        a = alphaOuter * SmoothStep(0f, 1f, t);
                     }
+                    if (a <= 0f) continue;
+
+                    byte* p = row + x * 4;
+                    int b = p[0], g = p[1], rch = p[2];
+                    p[2] = (byte)(rch + (cr - rch) * a);
+                    p[1] = (byte)(g + (cg - g) * a);
+                    p[0] = (byte)(b + (cb - b) * a);
                 }
             }
         }
 
-        // 직사각형 박스 테두리를 픽셀로 그리기 — lineThickness(>=1) 적용
+        // 간단 3-탭 가우시안(σ≈1) 분리형
+        private static void GaussianBlurInplace(float[] src, int w, int h)
+        {
+            float[] k = { 0.27901f, 0.44198f, 0.27901f };
+            float[] tmp = new float[src.Length];
+
+            // 가로
+            Parallel.For(0, h, delegate (int y)
+            {
+                int row = y * w;
+                for (int x = 0; x < w; x++)
+                {
+                    float s = 0f;
+                    for (int i = -1; i <= 1; i++)
+                    {
+                        int xx = ClampInt(x + i, 0, w - 1);
+                        s += src[row + xx] * k[i + 1];
+                    }
+                    tmp[row + x] = s;
+                }
+            });
+
+            // 세로
+            Parallel.For(0, w, delegate (int x)
+            {
+                for (int y = 0; y < h; y++)
+                {
+                    float s = 0f;
+                    for (int i = -1; i <= 1; i++)
+                    {
+                        int yy = ClampInt(y + i, 0, h - 1);
+                        s += tmp[yy * w + x] * k[i + 1];
+                    }
+                    src[y * w + x] = s;
+                }
+            });
+        }
+
+        // 사각 박스 테두리(선택)
         private static unsafe void DrawBoxOnLockedBitmap(
             BitmapData data, Rectangle box, Color color, int lineThickness,
             int imgW, int imgH)
         {
-            // 경계 클램프
             int left = Math.Max(0, box.Left);
             int top = Math.Max(0, box.Top);
             int right = Math.Min(imgW - 1, box.Right - 1);
             int bottom = Math.Min(imgH - 1, box.Bottom - 1);
-
             if (left > right || top > bottom) return;
 
             byte* basePtr = (byte*)data.Scan0;
             int stride = data.Stride;
             byte cr = color.R, cg = color.G, cb = color.B;
+            int half = Math.Max(1, lineThickness) / 2;
 
-            int half = lineThickness / 2;
-
-            // 수평선(상/하)
             for (int yEdge = -half; yEdge <= half; yEdge++)
             {
                 int yTop = top + yEdge;
@@ -248,39 +499,26 @@ namespace SmartLabelingApp
                 if (yTop >= 0 && yTop < imgH)
                 {
                     byte* row = basePtr + yTop * stride;
-                    for (int x = left; x <= right; x++)
-                    {
-                        byte* p = row + x * 4; p[2] = cr; p[1] = cg; p[0] = cb;
-                    }
+                    for (int x = left; x <= right; x++) { byte* p = row + x * 4; p[2] = cr; p[1] = cg; p[0] = cb; }
                 }
                 if (yBot >= 0 && yBot < imgH)
                 {
                     byte* row = basePtr + yBot * stride;
-                    for (int x = left; x <= right; x++)
-                    {
-                        byte* p = row + x * 4; p[2] = cr; p[1] = cg; p[0] = cb;
-                    }
+                    for (int x = left; x <= right; x++) { byte* p = row + x * 4; p[2] = cr; p[1] = cg; p[0] = cb; }
                 }
             }
 
-            // 수직선(좌/우)
             for (int xEdge = -half; xEdge <= half; xEdge++)
             {
                 int xL = left + xEdge;
                 int xR = right + xEdge;
                 if (xL >= 0 && xL < imgW)
                 {
-                    for (int y = top; y <= bottom; y++)
-                    {
-                        byte* p = basePtr + y * stride + xL * 4; p[2] = cr; p[1] = cg; p[0] = cb;
-                    }
+                    for (int y = top; y <= bottom; y++) { byte* p = basePtr + y * stride + xL * 4; p[2] = cr; p[1] = cg; p[0] = cb; }
                 }
                 if (xR >= 0 && xR < imgW)
                 {
-                    for (int y = top; y <= bottom; y++)
-                    {
-                        byte* p = basePtr + y * stride + xR * 4; p[2] = cr; p[1] = cg; p[0] = cb;
-                    }
+                    for (int y = top; y <= bottom; y++) { byte* p = basePtr + y * stride + xR * 4; p[2] = cr; p[1] = cg; p[0] = cb; }
                 }
             }
         }
