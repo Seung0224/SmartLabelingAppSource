@@ -2,7 +2,7 @@
 {
     public static class EditorUIConfig
     {
-        public static int CircleSegVertexCount = 360; // 원 세그멘테이션용 기본 버텍스 개수
+        public static int CircleSegVertexCount = 180; // 원 세그멘테이션용 기본 버텍스 개수
 
         // 화면에 보이는 핸들 크기(px)
         public static float HandleDrawSizePx = 12f;
